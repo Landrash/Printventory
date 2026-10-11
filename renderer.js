@@ -15254,17 +15254,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                 failureReason = typeof describeThumbnailFailure === 'function'
                   ? describeThumbnailFailure(renderError, '', renderError && renderError.message)
                   : ((renderError && renderError.message) || 'Could not render a thumbnail');
-              } else if (headless && typeof isPermanentThumbnailSkipError === 'function' && isPermanentThumbnailSkipError(renderError)) {
-                thumbnail = (typeof THUMB_SKIP_MESH !== 'undefined') ? THUMB_SKIP_MESH : 'skip:mesh';
+              } else if (headless) {
+                const token = typeof headlessSkipTokenForError === 'function'
+                  ? headlessSkipTokenForError(renderError)
+                  : '';
+                if (token) thumbnail = token;
               }
             }
             if (options.force && !failureReason && !thumbnail) {
               const noted = takeThumbFailure(model.filePath);
               const detail = takeThumbFailureDetail(model.filePath);
-              if (!(isCancelled || (cancelRef && cancelRef.cancelled))) {
-                failureReason = typeof describeThumbnailFailure === 'function'
+              const aborted = isCancelled || (cancelRef && cancelRef.cancelled);
+              // Stop keeps a failure that already finished. An abort with no reason is ignored.
+              if (!aborted || noted || detail) {
+                const described = typeof describeThumbnailFailure === 'function'
                   ? describeThumbnailFailure(null, noted, detail)
-                  : (detail || 'Could not render a thumbnail');
+                  : (detail || noted || 'Could not render a thumbnail');
+                const tagged = typeof failureReasonErrorTag === 'function' && failureReasonErrorTag(described);
+                if (!aborted || tagged) failureReason = described;
               }
             }
             const skipToken = typeof isThumbSkipToken === 'function' && isThumbSkipToken(thumbnail);
@@ -15281,8 +15288,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                   thumbnail = await generateThumbnail(model.filePath, { skipHash: true, reportSkips: true });
                 } catch (renderError) {
                   console.error(`Error generating 3D thumbnail for ${model.filePath}:`, renderError);
-                  if (typeof isPermanentThumbnailSkipError === 'function' && isPermanentThumbnailSkipError(renderError)) {
-                    thumbnail = (typeof THUMB_SKIP_MESH !== 'undefined') ? THUMB_SKIP_MESH : 'skip:mesh';
+                  const retryToken = typeof headlessSkipTokenForError === 'function'
+                    ? headlessSkipTokenForError(renderError)
+                    : '';
+                  if (retryToken) {
+                    thumbnail = retryToken;
                   } else if (isThumbnailLoadTimeout(renderError)) {
                     thumbnail = (typeof THUMB_SKIP_TIMEOUT !== 'undefined') ? THUMB_SKIP_TIMEOUT : 'skip:timeout';
                   }
@@ -15349,14 +15359,22 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         } finally {
           const stopped = isCancelled || (cancelRef && cancelRef.cancelled);
-          if (options.force && !savedThisModel && !skippedThisModel && !stopped) {
-            forceFailures.push({
+          const settled = typeof settleThumbnailAttempt === 'function'
+            ? settleThumbnailAttempt({
               filePath: model.filePath,
-              reason: failureReason || 'Could not render a thumbnail'
-            });
+              force: !!options.force,
+              saved: savedThisModel,
+              skipped: skippedThisModel,
+              stopped,
+              failureReason,
+              skipErrorTag
+            })
+            : null;
+          if (settled) {
+            if (settled.failure) forceFailures.push(settled.failure);
+            if (settled.tag) skipTagPaths.set(model.filePath, settled.tag);
+            else if (settled.clearTags) savedTagPaths.push(model.filePath);
           }
-          if (skippedThisModel && skipErrorTag) skipTagPaths.set(model.filePath, skipErrorTag);
-          else if (savedThisModel) savedTagPaths.push(model.filePath);
           if (savedThisModel) savedCount++;
           else if (skippedThisModel) skippedCount++;
           processedInBatch++;
@@ -20694,6 +20712,10 @@ async function generateThumbnail(file, options = {}) {
         : ((error && error.message) || 'Could not render a thumbnail'));
       wrapped.forceThumbFailed = true;
       throw wrapped;
+    }
+    if (options && options.reportSkips) {
+      const token = typeof headlessSkipTokenForError === 'function' ? headlessSkipTokenForError(error) : '';
+      if (token) return token;
     }
     return '3d.png';
   }

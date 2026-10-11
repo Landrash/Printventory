@@ -4,6 +4,11 @@ All notable changes contributed via pull request are documented in this file.
 
 ## [Unreleased]
 
+## [2.2.25] - 2026-10-11
+
+- Force Missing Thumbnails tags files that fail because they have no preview, time out, or are too large. Stopping the job keeps those tags for files that already finished and leaves the file still running untagged
+- Generate Missing treats a file that cannot be read or has no mesh as a permanent skip, so the next run does not try it again
+
 ## [2.2.24] - 2026-10-10
 
 - Setting a tag on a Ctrl+A selection updates the grid without a refresh

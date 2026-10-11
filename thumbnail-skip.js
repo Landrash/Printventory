@@ -24,7 +24,7 @@ function thumbnailErrorTags() {
   return [THUMB_ERR_TOO_LARGE, THUMB_ERR_TIMEOUT, THUMB_ERR_NO_PREVIEW];
 }
 
-function thumbnailErrorTagSentence(tags) {
+function thumbnailErrorTagSentence(tags, lead) {
   const names = [];
   const seen = new Set();
   for (const tag of tags || []) {
@@ -35,9 +35,10 @@ function thumbnailErrorTagSentence(tags) {
   }
   names.sort();
   if (!names.length) return '';
-  if (names.length === 1) return `Skipped files were tagged ${names[0]}.`;
-  if (names.length === 2) return `Skipped files were tagged ${names[0]} and ${names[1]}.`;
-  return `Skipped files were tagged ${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}.`;
+  const prefix = lead || 'Skipped files were tagged';
+  if (names.length === 1) return `${prefix} ${names[0]}.`;
+  if (names.length === 2) return `${prefix} ${names[0]} and ${names[1]}.`;
+  return `${prefix} ${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}.`;
 }
 
 /**
@@ -48,7 +49,65 @@ function isPermanentThumbnailSkipError(error) {
   const msg = String((error && error.message) || error || '');
   return /STL header does not match the file size/i.test(msg)
     || /STL file too small/i.test(msg)
-    || /no drawable mesh/i.test(msg);
+    || /no drawable mesh/i.test(msg)
+    || /no mesh geometry/i.test(msg)
+    || /failed to fetch/i.test(msg);
+}
+
+/** Safety-pass token for an error that will not succeed on the next Generate Missing run. */
+function headlessSkipTokenForError(error) {
+  if (!isPermanentThumbnailSkipError(error)) return '';
+  return THUMB_SKIP_MESH;
+}
+
+/**
+ * What one bulk-job model should do to err tags after the attempt finishes.
+ * Force failures are tagged here. Safety-pass skips pass skipErrorTag.
+ * Stop still tags failures that already finished. An aborted in-progress file,
+ * and anything not started, is left untagged.
+ */
+function settleThumbnailAttempt(attempt) {
+  const filePath = attempt && attempt.filePath;
+  const stopped = !!(attempt && attempt.stopped);
+  const saved = !!(attempt && attempt.saved);
+  const skipped = !!(attempt && attempt.skipped);
+  const force = !!(attempt && attempt.force);
+  const skipErrorTag = (attempt && attempt.skipErrorTag) || '';
+  const failureReason = (attempt && attempt.failureReason) || '';
+  let failure = null;
+  let tag = '';
+  if (force && !saved && !skipped && filePath) {
+    const completedTag = failureReasonErrorTag(failureReason);
+    if (!stopped) {
+      const reason = failureReason || 'Could not render a thumbnail';
+      failure = { filePath, reason };
+      tag = failureReasonErrorTag(reason);
+    } else if (completedTag) {
+      failure = { filePath, reason: failureReason };
+      tag = completedTag;
+    }
+  }
+  if (!tag && skipped && skipErrorTag && filePath) tag = skipErrorTag;
+  return {
+    failure,
+    tag: filePath ? tag : '',
+    clearTags: !!(saved && filePath && !tag)
+  };
+}
+
+/**
+ * Tag for a finished attempt that did not save a thumbnail.
+ * Blank for aborts so Stop does not label the file in progress.
+ */
+function failureReasonErrorTag(reason) {
+  const raw = String(reason || '').replace(/\s+/g, ' ').trim();
+  if (!raw || /load aborted/i.test(raw) || /^stopped$/i.test(raw)) return '';
+  if (/timed out|\btimeout\b/i.test(raw)) return THUMB_ERR_TIMEOUT;
+  if (/too large|size limit|over the size/i.test(raw)) return THUMB_ERR_TOO_LARGE;
+  if (/no mesh|no drawable|stl header|stl file too small|no embedded preview|could not read|failed to fetch|not a valid mesh|could not render|could not load|corrupted|no preview/i.test(raw)) {
+    return THUMB_ERR_NO_PREVIEW;
+  }
+  return '';
 }
 
 function describeThumbnailFailure(error, noted, detail) {
@@ -83,9 +142,12 @@ function groupForceFailures(failures) {
 }
 
 function withThumbnailErrorTagNote(message, result) {
+  if (!message) return message;
   const skipped = Number(result && result.skipped) || 0;
-  if (!message || skipped <= 0) return message;
-  const note = thumbnailErrorTagSentence(result && result.errorTags);
+  const note = thumbnailErrorTagSentence(
+    result && result.errorTags,
+    skipped > 0 ? 'Skipped files were tagged' : 'Failed files were tagged'
+  );
   if (!note) return message;
   return `${message} ${note}`;
 }
@@ -151,6 +213,9 @@ if (typeof module !== 'undefined' && module.exports) {
     thumbnailErrorTags,
     thumbnailErrorTagSentence,
     isPermanentThumbnailSkipError,
+    headlessSkipTokenForError,
+    settleThumbnailAttempt,
+    failureReasonErrorTag,
     describeThumbnailFailure,
     groupForceFailures,
     thumbnailJobFinishedMessage
