@@ -14691,7 +14691,11 @@ ipcHandlerRegistry.set('execute-client-command', executeClientCommandHandler);
 ipcMain.handle('get-all-model-references', async () => {
   try {
     // Use the global db variable directly instead of calling getDb()
-    const modelRefs = cachedPrepare('SELECT id, filePath, size FROM models').all();
+    const modelRefs = cachedPrepare(`
+      SELECT id, filePath, size,
+        CASE WHEN thumbnail IS NOT NULL AND thumbnail != '' AND thumbnail != '3d.png' THEN 1 ELSE 0 END AS hasThumbnail
+      FROM models
+    `).all();
     return modelRefs;
   } catch (error) {
     console.error('Error getting model references:', error);

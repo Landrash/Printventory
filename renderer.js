@@ -791,7 +791,7 @@ window.savePerformanceSettingsFromDialog = async function savePerformanceSetting
       throw new Error('Invalid max file size. Must be at least 1 MB.');
     }
     await window.electron.saveSetting('maxFileSizeMB', String(newMaxFileSize));
-    MAX_FILE_SIZE_MB = newMaxFileSize;
+    applyMaxFileSizeMB(newMaxFileSize);
     const dialog = document.getElementById('performance-settings-dialog');
     if (dialog && typeof dialog.close === 'function') dialog.close();
     if (window.electron.showMessage) await window.electron.showMessage('Success', 'Performance settings saved successfully');
@@ -1031,6 +1031,37 @@ const DEFER_SCAN_BATCH_THUMBNAILS_THRESHOLD = 80;
 
 let BATCH_SIZE = 50; // Default batch size for database operations
 let MAX_FILE_SIZE_MB = 50; // Default max file size in MB
+/** False until maxFileSizeMB has been read. The 50 MB default must not label files before that. */
+let maxFileSizeLimitKnown = false;
+let maxFileSizeLoadPromise = null;
+
+function applyMaxFileSizeMB(raw) {
+  const parsed = parseMaxFileSizeMBInput(raw);
+  if (parsed != null) MAX_FILE_SIZE_MB = parsed;
+  maxFileSizeLimitKnown = true;
+  return MAX_FILE_SIZE_MB;
+}
+
+function ensureMaxFileSizeLoaded() {
+  if (maxFileSizeLimitKnown) return Promise.resolve(MAX_FILE_SIZE_MB);
+  if (maxFileSizeLoadPromise) return maxFileSizeLoadPromise;
+  maxFileSizeLoadPromise = (async () => {
+    try {
+      const raw = (window.electron && typeof window.electron.getSetting === 'function')
+        ? await window.electron.getSetting('maxFileSizeMB')
+        : null;
+      applyMaxFileSizeMB(raw || '50');
+    } catch (error) {
+      console.error('Error loading max file size:', error);
+      maxFileSizeLimitKnown = true;
+    }
+    try {
+      if (typeof scheduleVisibleThumbnailHydrate === 'function') scheduleVisibleThumbnailHydrate();
+    } catch (_) { /* grid may not be up yet */ }
+    return MAX_FILE_SIZE_MB;
+  })();
+  return maxFileSizeLoadPromise;
+}
 const THUMBNAIL_BATCH_SIZE = 10; // Default batch size for thumbnails
 // Higher concurrency in Server/Docker mode to compensate for slower file system operations
 // Docker file system operations (especially on network shares) can be 10-100ms per operation
@@ -1536,8 +1567,8 @@ function thumbnailSizeLimitBytes() {
   return (Number.isFinite(mb) && mb > 0 ? mb : 50) * 1024 * 1024;
 }
 
-function knownModelSizeBytes(filePath) {
-  if (!filePath || typeof normalizePathForComparison !== 'function') return 0;
+function findKnownModel(filePath) {
+  if (!filePath || typeof normalizePathForComparison !== 'function') return null;
   const norm = normalizePathForComparison(filePath);
   const pools = [];
   const grid = document.querySelector('.file-grid');
@@ -1549,20 +1580,62 @@ function knownModelSizeBytes(filePath) {
       const model = list[i];
       if (!model || !model.filePath) continue;
       if (normalizePathForComparison(model.filePath) !== norm) continue;
-      const size = Number(model.size);
-      if (Number.isFinite(size) && size > 0) return size;
+      return model;
     }
   }
-  return 0;
+  return null;
+}
+
+function knownModelSizeBytes(filePath) {
+  const model = findKnownModel(filePath);
+  const size = model && Number(model.size);
+  return Number.isFinite(size) && size > 0 ? size : 0;
+}
+
+function isSkippedPreviewDataUrl(src) {
+  if (!src || typeof src !== 'string' || typeof generateSkippedPreviewPlaceholder !== 'function') return false;
+  return src === generateSkippedPreviewPlaceholder('Too large')
+    || src === generateSkippedPreviewPlaceholder('No preview');
+}
+
+function isRealThumbnailDataUrl(src) {
+  if (!src || typeof src !== 'string' || !src.startsWith('data:image')) return false;
+  if (isSkippedPreviewDataUrl(src)) return false;
+  if (typeof isFailurePlaceholderThumbnail === 'function' && isFailurePlaceholderThumbnail(src)) return false;
+  return true;
+}
+
+function modelRecordHasThumbnail(model) {
+  if (!model) return false;
+  if (model.hasThumbnail) return true;
+  const raw = model.thumbnail;
+  if (!raw || typeof raw !== 'string' || raw === '3d.png') return false;
+  const parts = raw.includes('::') ? raw.split('::') : [raw];
+  return parts.some((part) => isRealThumbnailDataUrl(part));
+}
+
+function containerShowsRealThumbnail(container) {
+  const img = container && container.querySelector && container.querySelector('img');
+  return !!(img && isRealThumbnailDataUrl(img.src));
+}
+
+/** A stored or on-screen thumbnail must never be replaced by the Too large overlay. */
+function thumbnailAlreadyExists(filePath, model, container) {
+  if (modelRecordHasThumbnail(model)) return true;
+  if (containerShowsRealThumbnail(container)) return true;
+  if (filePath && modelRecordHasThumbnail(findKnownModel(filePath))) return true;
+  return false;
 }
 
 function modelTooLargeForThumbnail(filePath, model) {
+  if (!maxFileSizeLimitKnown) return false;
   const fromModel = model && Number(model.size);
   const size = Number.isFinite(fromModel) && fromModel > 0 ? fromModel : knownModelSizeBytes(filePath);
   return size > thumbnailSizeLimitBytes();
 }
 
 function giveUpOnOversizedThumbnail(filePath, container) {
+  if (thumbnailAlreadyExists(filePath, null, container)) return;
   if (filePath) {
     slowThumbnailExhausted.add(filePath);
     deferredSlowThumbnails.delete(filePath);
@@ -1629,6 +1702,10 @@ function scheduleDeferredThumbnailPass() {
   if (room === 0) return;
   const batch = [];
   for (const [path, item] of deferredSlowThumbnails) {
+    if (thumbnailAlreadyExists(path, null, item && item.container)) {
+      deferredSlowThumbnails.delete(path);
+      continue;
+    }
     if (modelTooLargeForThumbnail(path)) {
       deferredSlowThumbnails.delete(path);
       slowThumbnailExhausted.add(path);
@@ -1733,15 +1810,17 @@ function findQueuedThumbnailTask(filePath) {
 function ensureVisibleThumbnailQueued(itemEl, model, thumbPriority) {
   if (window._serverBulkThumbnailJobActive) return false;
   if (!itemEl || !model || !model.filePath) return false;
+  const thumbContainer = itemEl.querySelector('.thumbnail-container');
+  if (thumbnailAlreadyExists(model.filePath, model, thumbContainer)) return false;
+  if (!maxFileSizeLimitKnown) return false;
   if (modelTooLargeForThumbnail(model.filePath, model)) {
-    giveUpOnOversizedThumbnail(model.filePath, itemEl.querySelector('.thumbnail-container'));
+    giveUpOnOversizedThumbnail(model.filePath, thumbContainer);
     return false;
   }
   if (thumbnailQueueShouldWait(model.filePath)) return false;
   if (model.hasThumbnail) return false;
   if (hasImageOnlyPreviewMiss(model.filePath)) return false;
 
-  const thumbContainer = itemEl.querySelector('.thumbnail-container');
   if (!thumbContainer) return false;
   const img = thumbContainer.querySelector('img');
   if (img && typeof img.src === 'string' && img.src.startsWith('data:image')) return false;
@@ -5077,6 +5156,7 @@ if (window._electronPendingEvents['thumbnail-job-error']) {
     window._serverBulkThumbnailJobActive = true;
 
     try {
+      await ensureMaxFileSizeLoaded();
       const generateThumbnailsForModels = await waitForGenerateThumbnailsForModels();
 
       // Path-only worklist — never preload thousands of full model rows (OOM on large libs).
@@ -5136,7 +5216,8 @@ if (window._electronPendingEvents['thumbnail-job-error']) {
         const chunkModels = chunk.map((row) => ({
           filePath: row.filePath,
           hash: row.hash || '',
-          size: Number(row.size) || 0
+          size: Number(row.size) || 0,
+          hasThumbnail: !!(row.hasThumbnail)
         }));
         const result = await generateThumbnailsForModels(chunkModels, {
           headless: true,
@@ -11526,12 +11607,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function initializePerformanceSettings() {
     try {
       // Load max file size setting
-      const maxFileSize = await window.electron.getSetting('maxFileSizeMB') || '50';
+      await ensureMaxFileSizeLoaded();
       const input = document.getElementById('max-file-size');
-      if (input) {
-        input.value = maxFileSize;
-        MAX_FILE_SIZE_MB = parseInt(maxFileSize);
-      }
+      if (input) input.value = String(MAX_FILE_SIZE_MB);
     } catch (error) {
       console.error('Error initializing performance settings:', error);
     }
@@ -11555,7 +11633,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       await window.electron.saveSetting('maxFileSizeMB', maxFileSize.toString());
       
       // Update the global variable
-      MAX_FILE_SIZE_MB = maxFileSize;
+      applyMaxFileSizeMB(maxFileSize);
       
       // Close dialog and show success message
       const dialog = document.getElementById('performance-settings-dialog');
@@ -11615,13 +11693,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       await window.electron.saveSetting('batchSize', newBatchSize.toString());
       await window.electron.saveSetting('maxConcurrentRenders', newConcurrentRenders.toString());
       await window.electron.saveSetting('maxFileSizeMB', newMaxFileSize.toString());
+      applyMaxFileSizeMB(newMaxFileSize);
       await window.electron.saveSetting('thumbnailBatchSize', newThumbnailBatchSize.toString());
       await window.electron.saveSetting('renderDelay', newRenderDelay.toString());
 
       // Update variables
       BATCH_SIZE = newBatchSize;
       MAX_CONCURRENT_RENDERS = newConcurrentRenders;
-      MAX_FILE_SIZE_MB = newMaxFileSize;
       THUMBNAIL_BATCH_SIZE = newThumbnailBatchSize;
       RENDER_DELAY = newRenderDelay;
 
@@ -15304,7 +15382,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
 
           skipErrorTag = thumbnailSkipErrorTag(thumbnail);
-          if (!options.force && headless && skipErrorTag) {
+          if (!options.force && headless && skipErrorTag && modelRecordHasThumbnail(model)) {
+            skipErrorTag = '';
+            thumbnail = null;
+            savedThisModel = true;
+          } else if (!options.force && headless && skipErrorTag) {
             const label = thumbnail === 'skip:size' ? 'Too large' : 'No preview';
             const placeholder = generateSkippedPreviewPlaceholder(label);
             if (placeholder && placeholder.startsWith('data:image')) {
@@ -17683,7 +17765,7 @@ async function renderModelToPNG(filePath, container, existingThumbnail, options 
 
     // Files over the max size must not be extracted or parsed for a grid thumb.
     // A 90MB zip entry blocks get-model for the whole details panel.
-    if (!noTimeout && modelTooLargeForThumbnail(filePath)) {
+    if (!noTimeout && modelTooLargeForThumbnail(filePath) && !thumbnailAlreadyExists(filePath, null, container)) {
       giveUpOnOversizedThumbnail(filePath, container);
       return '3d.png';
     }
@@ -17791,7 +17873,7 @@ async function renderModelToPNG(filePath, container, existingThumbnail, options 
     }
       if (isThumbnailLoadTimeout(error)) {
       noteThumbnailPressure(filePath, 'timeout');
-      if (!(options && options.force) && modelTooLargeForThumbnail(filePath)) {
+      if (!(options && options.force) && modelTooLargeForThumbnail(filePath) && !thumbnailAlreadyExists(filePath, null, container)) {
         giveUpOnOversizedThumbnail(filePath, container);
         return '3d.png';
       }
@@ -20656,6 +20738,7 @@ async function generateThumbnail(file, options = {}) {
     // Use the exposed function to get file stats
     const stats = await window.electron.getFileStats(filePath);
     const fileSizeInMB = stats.size / (1024 * 1024);
+    await ensureMaxFileSizeLoaded();
     
     if (!options.force && fileSizeInMB > MAX_FILE_SIZE_MB) {
       debugLog(`Skipping thumbnail generation for ${filePath} (${fileSizeInMB.toFixed(2)}MB > ${MAX_FILE_SIZE_MB}MB)`);
@@ -21947,10 +22030,7 @@ async function initializeAppOnce() {
     // Initialize performance settings inline
     try {
       // Get the stored max file size value
-      const maxFileSize = await window.electron.getSetting('maxFileSizeMB');
-      if (maxFileSize) {
-        MAX_FILE_SIZE_MB = parseInt(maxFileSize);
-      }
+      await ensureMaxFileSizeLoaded();
 
       // Set the input value if the element exists
       const maxFileSizeInput = document.getElementById('max-file-size');
@@ -23375,7 +23455,7 @@ function createModelItem(model, viewMode = null, thumbPriority = THUMB_PRIORITY_
       // keep placeholder; job will fill thumbs server-side
     } else if (hasImageOnlyPreviewMiss(model.filePath)) {
       img.src = generateTypedPlaceholder(extensionFromModelPath(model.filePath));
-    } else if (modelTooLargeForThumbnail(model.filePath, model)) {
+    } else if (modelTooLargeForThumbnail(model.filePath, model) && !thumbnailAlreadyExists(model.filePath, model, thumbnailContainer)) {
       giveUpOnOversizedThumbnail(model.filePath, thumbnailContainer);
     } else if (thumbnailQueueShouldWait(model.filePath)) {
       // Fast pass deferred this file, or the long pass already gave up.

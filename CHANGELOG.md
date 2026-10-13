@@ -4,6 +4,11 @@ All notable changes contributed via pull request are documented in this file.
 
 ## [Unreleased]
 
+## [2.2.27] - 2026-10-13
+
+- Saved thumbnails stay on screen. The Too large label is no longer drawn over a thumbnail that already exists, including before the max file size setting has loaded
+- Docker thumbnail jobs use the saved max file size, and they do not replace an existing thumbnail with Too large or No preview
+
 ## [2.2.26] - 2026-10-13
 
 - Library thumbnails load in batches, and an oversized stored image is skipped without reading it, so a few huge thumbnails do not stall the grid
