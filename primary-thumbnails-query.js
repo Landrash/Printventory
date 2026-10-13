@@ -20,6 +20,7 @@ function uniqueFilePaths(filePaths, limit = PRIMARY_THUMBNAIL_BATCH_LIMIT) {
 /**
  * Primary (first `::` segment) thumbnail for an explicit path list.
  * Oversized column values stay out of the result so a few huge blobs cannot stall the grid.
+ * octet_length() is checked first: it reads only the record header, so oversized blobs are never loaded.
  */
 function buildPrimaryThumbnailsQuery(filePaths, maxChars) {
   const paths = uniqueFilePaths(filePaths);
@@ -30,13 +31,13 @@ function buildPrimaryThumbnailsQuery(filePaths, maxChars) {
   const sql = `
     SELECT filePath,
       CASE
+        WHEN octet_length(thumbnail) > ? THEN NULL
         WHEN thumbnail IS NULL OR thumbnail = '' OR thumbnail = '3d.png' THEN NULL
-        WHEN LENGTH(thumbnail) > ? THEN NULL
         WHEN INSTR(thumbnail, '::') > 0 THEN SUBSTR(thumbnail, 1, INSTR(thumbnail, '::') - 1)
         ELSE thumbnail
       END AS primaryThumb,
       CASE
-        WHEN thumbnail IS NOT NULL AND thumbnail != '' AND thumbnail != '3d.png' AND LENGTH(thumbnail) > ? THEN 1
+        WHEN octet_length(thumbnail) > ? THEN 1
         ELSE 0
       END AS oversized
     FROM models

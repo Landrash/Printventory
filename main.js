@@ -261,7 +261,7 @@ const analytics = {
   isUsageEnabled() {
     if (!db || !db.prepare) return false;
     try {
-      const collectUsage = db.prepare('SELECT value FROM settings WHERE key = ?').get('CollectUsage');
+      const collectUsage = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('CollectUsage');
       return !!(collectUsage && collectUsage.value === '1');
     } catch (error) {
       console.error('Error checking CollectUsage for analytics:', error);
@@ -534,7 +534,7 @@ function loadOptionalServerTlsOptions() {
 
 function persistSetting(key, value) {
   if (!db) throw new Error('Database is not initialized');
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value == null ? '' : String(value));
+  cachedPrepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value == null ? '' : String(value));
 }
 
 function formatPort80BindError(err) {
@@ -1684,7 +1684,7 @@ function stopHttpServer() {
 function getSettingValueOr(key, fallback) {
   try {
     if (!db) return fallback;
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    const row = cachedPrepare('SELECT value FROM settings WHERE key = ?').get(key);
     if (row && row.value != null && row.value !== '') return row.value;
   } catch (_) { /* ignore */ }
   return fallback;
@@ -1905,7 +1905,7 @@ function normalizeMcpTagNames(raw) {
 }
 
 function getModelTagNamesForMcp(modelId) {
-  return db.prepare(`
+  return cachedPrepare(`
     SELECT t.name FROM tags t
     JOIN model_tags mt ON mt.tag_id = t.id
     WHERE mt.model_id = ?
@@ -1918,13 +1918,13 @@ function resolveTagForMcp(args) {
   if (args.id != null && args.id !== '') {
     const id = Number(args.id);
     if (!Number.isInteger(id) || id <= 0) throw new Error('Invalid tag id');
-    const tag = db.prepare('SELECT id, name FROM tags WHERE id = ?').get(id);
+    const tag = cachedPrepare('SELECT id, name FROM tags WHERE id = ?').get(id);
     if (!tag) throw new Error(`Tag not found for id: ${id}`);
     return tag;
   }
   const name = String(args.name || '').trim();
   if (!name) throw new Error('Provide tag id or name');
-  const tag = db.prepare('SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE').get(name);
+  const tag = cachedPrepare('SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE').get(name);
   if (!tag) throw new Error(`Tag not found: ${name}`);
   return tag;
 }
@@ -1935,25 +1935,25 @@ function renameTagForMcp(args) {
   if (!newName) throw new Error('newName is required');
   if (newName.toLowerCase() === String(tag.name).toLowerCase()) {
     if (newName !== tag.name) {
-      db.prepare('UPDATE tags SET name = ? WHERE id = ?').run(newName, tag.id);
+      cachedPrepare('UPDATE tags SET name = ? WHERE id = ?').run(newName, tag.id);
     }
     return { success: true, id: tag.id, name: newName, merged: false };
   }
-  const existing = db.prepare('SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE').get(newName);
+  const existing = cachedPrepare('SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE').get(newName);
   if (existing && existing.id !== tag.id) {
     db.transaction(() => {
-      const rows = db.prepare('SELECT model_id FROM model_tags WHERE tag_id = ?').all(tag.id);
+      const rows = cachedPrepare('SELECT model_id FROM model_tags WHERE tag_id = ?').all(tag.id);
       const insert = db.prepare('INSERT OR IGNORE INTO model_tags (model_id, tag_id) VALUES (?, ?)');
       for (const row of rows) insert.run(row.model_id, existing.id);
-      db.prepare('DELETE FROM model_tags WHERE tag_id = ?').run(tag.id);
-      db.prepare('DELETE FROM tags WHERE id = ?').run(tag.id);
+      cachedPrepare('DELETE FROM model_tags WHERE tag_id = ?').run(tag.id);
+      cachedPrepare('DELETE FROM tags WHERE id = ?').run(tag.id);
       if (existing.name !== newName) {
-        db.prepare('UPDATE tags SET name = ? WHERE id = ?').run(newName, existing.id);
+        cachedPrepare('UPDATE tags SET name = ? WHERE id = ?').run(newName, existing.id);
       }
     })();
     return { success: true, id: existing.id, name: newName, merged: true, deletedId: tag.id };
   }
-  db.prepare('UPDATE tags SET name = ? WHERE id = ?').run(newName, tag.id);
+  cachedPrepare('UPDATE tags SET name = ? WHERE id = ?').run(newName, tag.id);
   return { success: true, id: tag.id, name: newName, merged: false };
 }
 
@@ -1965,12 +1965,12 @@ function renameMetadataForMcp(args) {
   const newName = String(args && args.newName || '').trim();
   if (!MCP_METADATA_TYPES.has(type)) throw new Error('type must be designer, parentModel, or license');
   if (!oldName || !newName) throw new Error('oldName and newName are required');
-  const existing = db.prepare(`
+  const existing = cachedPrepare(`
     SELECT COUNT(*) as count FROM models
     WHERE ${type} = ? AND ${type} IS NOT NULL AND ${type} != ''
   `).get(newName);
   const existingCount = existing ? existing.count : 0;
-  const result = db.prepare(`UPDATE models SET ${type} = ? WHERE ${type} = ?`).run(newName, oldName);
+  const result = cachedPrepare(`UPDATE models SET ${type} = ? WHERE ${type} = ?`).run(newName, oldName);
   return {
     success: true,
     updated: result.changes,
@@ -1984,7 +1984,7 @@ function deleteMetadataForMcp(args) {
   const name = String(args && args.name || '').trim();
   if (!MCP_METADATA_TYPES.has(type)) throw new Error('type must be designer, parentModel, or license');
   if (!name) throw new Error('name is required');
-  const result = db.prepare(`UPDATE models SET ${type} = NULL WHERE ${type} = ?`).run(name);
+  const result = cachedPrepare(`UPDATE models SET ${type} = NULL WHERE ${type} = ?`).run(name);
   return { success: true, updated: result.changes };
 }
 
@@ -2087,16 +2087,17 @@ function getMcpToolContext() {
         throw new Error('Provide id or filePath');
       }
       if (!model) return null;
-      const tags = db.prepare(`
+      const tags = cachedPrepare(`
         SELECT t.name FROM tags t
         JOIN model_tags mt ON mt.tag_id = t.id
         WHERE mt.model_id = ?
       `).all(model.id).map((t) => t.name);
       const filaments = getFilamentsForModel(model.id);
       if (!includeThumbnails) {
-        const stored = readThumbnailColumn(model.filePath);
-        applyThumbnailFlags(Object.assign(model, { thumbnail: stored }));
-        delete model.thumbnail;
+        // Flags are computed in SQL so the thumbnail blob never crosses into JS.
+        const flags = cachedPrepare(`SELECT ${MODEL_LIST_THUMB_FLAGS} FROM models WHERE id = ?`).get(model.id);
+        model.hasThumbnail = !!flags?.hasThumbnail;
+        model.hasMultipleThumbnails = !!flags?.hasMultipleThumbnails;
       }
       return { ...model, tags, filaments: filaments || [] };
     },
@@ -2139,7 +2140,7 @@ function getMcpToolContext() {
     renameTag: async (args) => renameTagForMcp(args),
     deleteTag: async (args) => {
       const tag = resolveTagForMcp(args);
-      const modelCount = db.prepare('SELECT COUNT(*) as count FROM model_tags WHERE tag_id = ?').get(tag.id)?.count || 0;
+      const modelCount = cachedPrepare('SELECT COUNT(*) as count FROM model_tags WHERE tag_id = ?').get(tag.id)?.count || 0;
       await deleteTagHandler(null, tag.id);
       return { success: true, id: tag.id, name: tag.name, unlinkedModels: modelCount };
     },
@@ -2171,7 +2172,7 @@ function getMcpToolContext() {
     deleteFilament: async (filamentId) => {
       const id = Number(filamentId);
       if (!Number.isInteger(id) || id <= 0) throw new Error('Invalid filament id');
-      const existing = db.prepare('SELECT id, name FROM filaments WHERE id = ?').get(id);
+      const existing = cachedPrepare('SELECT id, name FROM filaments WHERE id = ?').get(id);
       if (!existing) throw new Error(`Filament not found for id: ${id}`);
       await deleteFilamentHandler(null, id);
       return { success: true, id: existing.id, name: existing.name };
@@ -2202,7 +2203,7 @@ function getMcpToolContext() {
     },
     deletePrintEvent: async (eventId) => printEvents.deletePrintEvent(db, eventId),
     listParentModels: async () => {
-      const rows = db.prepare("SELECT DISTINCT parentModel FROM models WHERE parentModel IS NOT NULL AND parentModel != ''").all();
+      const rows = cachedPrepare("SELECT DISTINCT parentModel FROM models WHERE parentModel IS NOT NULL AND parentModel != ''").all();
       return rows.map((row) => row.parentModel);
     },
     renameMetadata: async (args) => renameMetadataForMcp(args),
@@ -2296,7 +2297,7 @@ function getMcpToolContext() {
       const scanningLibrary = paths.length === 0;
       if (scanningLibrary) {
         const cap = Math.min(Math.max(parseInt(args.limit, 10) || 500, 1), 2000);
-        paths = db.prepare('SELECT filePath FROM models ORDER BY fileName COLLATE NOCASE LIMIT ?').all(cap).map((r) => r.filePath);
+        paths = cachedPrepare('SELECT filePath FROM models ORDER BY fileName COLLATE NOCASE LIMIT ?').all(cap).map((r) => r.filePath);
       }
       const missingOnly = args.missingOnly !== undefined ? !!args.missingOnly : scanningLibrary;
       const results = [];
@@ -2309,7 +2310,7 @@ function getMcpToolContext() {
       }
       return { checked: paths.length, missingCount, results };
     },
-    getAllMetadata: async () => db.prepare(`
+    getAllMetadata: async () => cachedPrepare(`
       SELECT 'designer' as type, designer as name, COUNT(*) as model_count
       FROM models
       WHERE designer IS NOT NULL AND designer != ''
@@ -2369,7 +2370,7 @@ function getMcpToolContext() {
               errorCount += 1;
               continue;
             }
-            db.prepare(`
+            cachedPrepare(`
               UPDATE models SET designer = ?, parentModel = ?, notes = ?, license = ? WHERE filePath = ?
             `).run(
               filteredMetadata.designer || null,
@@ -2443,7 +2444,7 @@ function getMcpToolContext() {
       const directory = String(args.directory || '').trim();
       if (!directory) throw new Error('directory is required');
       const limit = Math.min(Math.max(parseInt(args.limit, 10) || 100, 1), 500);
-      const models = db.prepare(`
+      const models = cachedPrepare(`
         SELECT ${MODEL_LIST_COLUMNS} FROM models
         WHERE REPLACE(LOWER(filePath), CHAR(92), '/') LIKE ?
         ORDER BY fileName COLLATE NOCASE
@@ -2454,7 +2455,7 @@ function getMcpToolContext() {
     scanDirectory: async (args) => {
       let directory = String(args.directory || '').trim();
       if (!directory) {
-        directory = db.prepare('SELECT value FROM settings WHERE key = ?').get('directoryPath')?.value
+        directory = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('directoryPath')?.value
           || readStlHomeDirectories()[0]
           || '';
       }
@@ -2494,9 +2495,9 @@ function getMcpToolContext() {
       return { success: failed.length === 0, trashedCount: trashed.length, trashed, failed };
     },
     listSlicers: async () => {
-      const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
+      const tableExists = cachedPrepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
       if (!tableExists) return [];
-      return db.prepare('SELECT * FROM slicers').all();
+      return cachedPrepare('SELECT * FROM slicers').all();
     },
     openInSlicer: async (args) => {
       const filePaths = resolveMcpFilePaths(args);
@@ -2520,7 +2521,7 @@ function getMcpToolContext() {
         if (!fs.existsSync(filePath)) throw new Error(`File does not exist: ${filePath}`);
         const newDestination = path.join(destinationFolder, path.basename(filePath));
         await fs.promises.rename(filePath, newDestination);
-        db.prepare('UPDATE models SET filePath = ? WHERE filePath = ?').run(newDestination, filePath);
+        cachedPrepare('UPDATE models SET filePath = ? WHERE filePath = ?').run(newDestination, filePath);
         moved.push({ from: filePath, to: newDestination });
       }
       if (isServerMode && global.broadcastEvent) global.broadcastEvent('refresh-grid');
@@ -2618,6 +2619,34 @@ async function restartHttpServer() {
 }
 
 let db;
+
+// Compiled statements are reused per SQL text. Reset whenever `db` is reopened (restore/repair).
+const STATEMENT_CACHE_MAX = 500;
+const UNCACHED_STATEMENT_RE = /^\s*(CREATE|ALTER|DROP|PRAGMA|VACUUM|BEGIN|COMMIT|ROLLBACK|ATTACH|DETACH|REINDEX|ANALYZE|SAVEPOINT|RELEASE)\b/i;
+const statementCache = new Map();
+let statementCacheDb = null;
+
+function cachedPrepare(sql) {
+  if (statementCacheDb !== db) {
+    statementCache.clear();
+    statementCacheDb = db;
+  }
+  let stmt = statementCache.get(sql);
+  if (stmt) {
+    // Move to the end so the oldest entry is evicted first.
+    statementCache.delete(sql);
+    statementCache.set(sql, stmt);
+    return stmt;
+  }
+  stmt = db.prepare(sql);
+  if (UNCACHED_STATEMENT_RE.test(sql)) return stmt;
+  statementCache.set(sql, stmt);
+  if (statementCache.size > STATEMENT_CACHE_MAX) {
+    statementCache.delete(statementCache.keys().next().value);
+  }
+  return stmt;
+}
+
 let mainWindow;
 let isGeneratingHashes = false; // Track hash generation state
 let hashGenerationCancelRequested = false;
@@ -2642,16 +2671,10 @@ function scheduleBackgroundThumbnailCompression(reason) {
   }, THUMBNAIL_MIGRATION_DELAY_MS);
 }
 
-function getThumbnailStoredLength(filePath) {
-  if (!db || !filePath) return 0;
-  const row = db.prepare('SELECT LENGTH(thumbnail) AS len FROM models WHERE filePath = ?').get(filePath);
-  return row?.len ?? 0;
-}
-
 function clearThumbnailForPath(filePath, reason) {
   if (!db || !filePath) return false;
   try {
-    const result = db.prepare('UPDATE models SET thumbnail = NULL WHERE filePath = ?').run(filePath);
+    const result = cachedPrepare('UPDATE models SET thumbnail = NULL WHERE filePath = ?').run(filePath);
     if (result.changes > 0) {
       console.warn(`Cleared thumbnail for ${filePath}${reason ? ` (${reason})` : ''}`);
     }
@@ -2665,11 +2688,11 @@ function clearThumbnailForPath(filePath, reason) {
 function purgeCorruptThumbnailsOnly(maxChars = THUMBNAIL_ABSOLUTE_MAX_LOAD_CHARS) {
   if (!db) return 0;
   try {
-    const result = db.prepare(`
+    const result = cachedPrepare(`
       UPDATE models
       SET thumbnail = NULL
       WHERE thumbnail IS NOT NULL
-        AND LENGTH(thumbnail) > ?
+        AND octet_length(thumbnail) > ?
     `).run(maxChars);
     if (result.changes > 0) {
       console.warn(`Cleared ${result.changes} thumbnail(s) over ${maxChars} chars (corrupt/oversized safeguard)`);
@@ -2683,14 +2706,16 @@ function purgeCorruptThumbnailsOnly(maxChars = THUMBNAIL_ABSOLUTE_MAX_LOAD_CHARS
 
 function readThumbnailColumn(filePath, { allowOversized = false } = {}) {
   if (!db || !filePath) return null;
-  const storedLength = getThumbnailStoredLength(filePath);
-  if (storedLength <= 0) return null;
-  if (!allowOversized && storedLength > THUMBNAIL_ABSOLUTE_MAX_LOAD_CHARS) {
-    return null;
-  }
   try {
-    const row = db.prepare('SELECT thumbnail FROM models WHERE filePath = ?').get(filePath);
-    return row?.thumbnail ?? null;
+    // octet_length() reads the record header only, so oversized/corrupt values are
+    // rejected without SQLite loading them; within the limit the column is read once.
+    const maxLen = allowOversized ? Number.MAX_SAFE_INTEGER : THUMBNAIL_ABSOLUTE_MAX_LOAD_CHARS;
+    const row = cachedPrepare(`
+      SELECT CASE WHEN octet_length(thumbnail) <= ? THEN thumbnail END AS thumbnail
+      FROM models WHERE filePath = ?
+    `).get(maxLen, filePath);
+    const thumbnail = row?.thumbnail;
+    return thumbnail ? thumbnail : null;
   } catch (error) {
     console.error(`Failed to read thumbnail for ${filePath}:`, error);
     return null;
@@ -2703,13 +2728,12 @@ async function compressExistingThumbnailsInBackground(reason) {
   try {
     purgeCorruptThumbnailsOnly();
 
-    const rows = db.prepare(`
-      SELECT filePath, LENGTH(thumbnail) AS thumbLen
+    const rows = cachedPrepare(`
+      SELECT filePath, octet_length(thumbnail) AS thumbLen
       FROM models
-      WHERE thumbnail IS NOT NULL AND thumbnail != '' AND thumbnail != '3d.png'
+      WHERE octet_length(thumbnail) > ?
         AND thumbnail LIKE 'data:image%'
-        AND LENGTH(thumbnail) > ?
-      ORDER BY LENGTH(thumbnail) DESC
+      ORDER BY thumbLen DESC
     `).all(THUMBNAIL_MAX_STORED_CHARS);
 
     if (rows.length === 0) return;
@@ -2735,7 +2759,7 @@ async function compressExistingThumbnailsInBackground(reason) {
 
         const { value, changed } = compressThumbnailBlob(thumbnail);
         if (changed) {
-          db.prepare('UPDATE models SET thumbnail = ? WHERE filePath = ?').run(value, row.filePath);
+          cachedPrepare('UPDATE models SET thumbnail = ? WHERE filePath = ?').run(value, row.filePath);
           updated++;
         }
       } catch (rowError) {
@@ -2755,7 +2779,7 @@ function ensureThumbnailCompressedOnLoad(filePath, thumbnailString) {
   try {
     const { value, changed } = compressThumbnailBlob(thumbnailString);
     if (changed) {
-      db.prepare('UPDATE models SET thumbnail = ? WHERE filePath = ?').run(value, filePath);
+      cachedPrepare('UPDATE models SET thumbnail = ? WHERE filePath = ?').run(value, filePath);
     }
     return value;
   } catch (error) {
@@ -2773,6 +2797,33 @@ function loadThumbnailForModel(filePath) {
     console.error(`Failed to load thumbnail for ${filePath}:`, error);
     return null;
   }
+}
+
+/** Same result as loadThumbnailForModel per path, but one query per chunk instead of one per model. */
+function loadThumbnailsForModels(filePaths) {
+  const result = new Map();
+  if (!db || !Array.isArray(filePaths) || filePaths.length === 0) return result;
+  const unique = [...new Set(filePaths.filter(Boolean))];
+  const chunkSize = 500;
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => '?').join(',');
+    let rows;
+    try {
+      rows = cachedPrepare(`
+        SELECT filePath, CASE WHEN octet_length(thumbnail) <= ? THEN thumbnail END AS thumbnail
+        FROM models WHERE filePath IN (${placeholders})
+      `).all(THUMBNAIL_ABSOLUTE_MAX_LOAD_CHARS, ...chunk);
+    } catch (error) {
+      console.error('Failed to load thumbnail batch:', error);
+      continue;
+    }
+    for (const row of rows) {
+      if (!row.thumbnail) continue;
+      result.set(row.filePath, ensureThumbnailCompressedOnLoad(row.filePath, row.thumbnail));
+    }
+  }
+  return result;
 }
 
 /**
@@ -2858,7 +2909,7 @@ function applyThumbnailFlags(row) {
 
 function getModelByFilePath(filePath, { includeThumbnail = false } = {}) {
   if (!db || !filePath) return null;
-  const row = db.prepare(`SELECT ${MODEL_DETAIL_COLUMNS} FROM models WHERE filePath = ?`).get(filePath);
+  const row = cachedPrepare(`SELECT ${MODEL_DETAIL_COLUMNS} FROM models WHERE filePath = ?`).get(filePath);
   if (!row) return null;
   if (includeThumbnail) {
     row.thumbnail = loadThumbnailForModel(filePath);
@@ -2869,7 +2920,7 @@ function getModelByFilePath(filePath, { includeThumbnail = false } = {}) {
 
 function getModelById(modelId, { includeThumbnail = false } = {}) {
   if (!db || modelId == null) return null;
-  const row = db.prepare(`SELECT ${MODEL_DETAIL_COLUMNS} FROM models WHERE id = ?`).get(modelId);
+  const row = cachedPrepare(`SELECT ${MODEL_DETAIL_COLUMNS} FROM models WHERE id = ?`).get(modelId);
   if (!row) return null;
   if (includeThumbnail) {
     row.thumbnail = loadThumbnailForModel(row.filePath);
@@ -2917,7 +2968,7 @@ function flushSettingsToDisk() {
   try {
     if (!db) return;
     db.pragma('synchronous = FULL');
-    db.prepare('PRAGMA wal_checkpoint(FULL)').run();
+    cachedPrepare('PRAGMA wal_checkpoint(FULL)').run();
   } catch (_) { /* ignore */ }
 }
 
@@ -3190,11 +3241,11 @@ if (!gotTheLock) {
       }
 
       // Reset the version check flag on startup
-      db.prepare('UPDATE settings SET value = ? WHERE key = ?').run('false', 'versionCheckPerformedOnStartup');
+      cachedPrepare('UPDATE settings SET value = ? WHERE key = ?').run('false', 'versionCheckPerformedOnStartup');
 
       // Update the current version in the database
       try {
-        db.prepare('UPDATE settings SET value = ? WHERE key = ?').run(version, 'currentVersion');
+        cachedPrepare('UPDATE settings SET value = ? WHERE key = ?').run(version, 'currentVersion');
         console.log('Updated currentVersion in database to:', version);
       } catch (versionError) {
         console.error('Error updating currentVersion in database:', versionError);
@@ -3376,7 +3427,7 @@ function initializeDatabase() {
     // Create tables in sequence
     db.transaction(() => {
       // Create models table
-      db.prepare(`CREATE TABLE IF NOT EXISTS models (
+      cachedPrepare(`CREATE TABLE IF NOT EXISTS models (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           filePath TEXT UNIQUE,
           fileName TEXT,
@@ -3403,13 +3454,13 @@ function initializeDatabase() {
       )`).run();
 
       // Create tags table
-      db.prepare(`CREATE TABLE IF NOT EXISTS tags (
+      cachedPrepare(`CREATE TABLE IF NOT EXISTS tags (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT UNIQUE
       )`).run();
 
       // Create model_tags table
-      db.prepare(`CREATE TABLE IF NOT EXISTS model_tags (
+      cachedPrepare(`CREATE TABLE IF NOT EXISTS model_tags (
           model_id INTEGER,
           tag_id INTEGER,
           FOREIGN KEY(model_id) REFERENCES models(id),
@@ -3418,27 +3469,27 @@ function initializeDatabase() {
       )`).run();
       
       // Create settings table
-      db.prepare(`CREATE TABLE IF NOT EXISTS settings (
+      cachedPrepare(`CREATE TABLE IF NOT EXISTS settings (
           key TEXT PRIMARY KEY,
           value TEXT
       )`).run();
       
       // Create slicers table
-      db.prepare(`CREATE TABLE IF NOT EXISTS slicers (
+      cachedPrepare(`CREATE TABLE IF NOT EXISTS slicers (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL,
           path TEXT NOT NULL
       )`).run();
       
       // Create indexes for better performance
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_filepath ON models(filePath)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_filename ON models(fileName)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_designer ON models(designer)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_model_tags_tag_id ON model_tags(tag_id)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_model_tags_model_id ON model_tags(model_id)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_filepath ON models(filePath)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_filename ON models(fileName)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_designer ON models(designer)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_model_tags_tag_id ON model_tags(tag_id)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_model_tags_model_id ON model_tags(model_id)').run();
 
-      db.prepare(`CREATE TABLE IF NOT EXISTS filaments (
+      cachedPrepare(`CREATE TABLE IF NOT EXISTS filaments (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL,
           vendor TEXT,
@@ -3448,32 +3499,32 @@ function initializeDatabase() {
           spoolman_id INTEGER UNIQUE,
           source TEXT NOT NULL DEFAULT 'manual'
       )`).run();
-      db.prepare(`CREATE TABLE IF NOT EXISTS model_filaments (
+      cachedPrepare(`CREATE TABLE IF NOT EXISTS model_filaments (
           model_id INTEGER,
           filament_id INTEGER,
           FOREIGN KEY(model_id) REFERENCES models(id),
           FOREIGN KEY(filament_id) REFERENCES filaments(id),
           PRIMARY KEY(model_id, filament_id)
       )`).run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_filaments_name ON filaments(name)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_filaments_spoolman_id ON filaments(spoolman_id)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_model_filaments_filament_id ON model_filaments(filament_id)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_model_filaments_model_id ON model_filaments(model_id)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_filaments_name ON filaments(name)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_filaments_spoolman_id ON filaments(spoolman_id)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_model_filaments_filament_id ON model_filaments(filament_id)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_model_filaments_model_id ON model_filaments(model_id)').run();
       
       // Single-column indexes for sorting and filtering
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_size ON models(size)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_modifieddate ON models(modifiedDate)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_license ON models(license)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_parentmodel ON models(parentModel)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_printed ON models(printed)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_hash ON models(hash)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_thumbnail ON models(thumbnail)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_size ON models(size)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_modifieddate ON models(modifiedDate)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_license ON models(license)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_parentmodel ON models(parentModel)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_printed ON models(printed)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_hash ON models(hash)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_thumbnail ON models(thumbnail)').run();
       
       // Composite indexes for common query patterns
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_designer_filename ON models(designer, fileName)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_license_modifieddate ON models(license, modifiedDate)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_printed_modifieddate ON models(printed, modifiedDate)').run();
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_models_parentmodel_modifieddate ON models(parentModel, modifiedDate)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_designer_filename ON models(designer, fileName)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_license_modifieddate ON models(license, modifiedDate)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_printed_modifieddate ON models(printed, modifiedDate)').run();
+      cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_parentmodel_modifieddate ON models(parentModel, modifiedDate)').run();
     })();
     
     // Migrate existing database: add dateAdded column if it doesn't exist
@@ -3486,10 +3537,10 @@ function initializeDatabase() {
     clearFailurePlaceholderThumbnails();
     
     // Create index for dateAdded after migration (in case it was just added)
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_models_dateadded ON models(dateAdded)').run();
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_models_isnew ON models(isNew)').run();
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_models_rating ON models(rating)').run();
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_models_favorite ON models(favorite)').run();
+    cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_dateadded ON models(dateAdded)').run();
+    cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_isnew ON models(isNew)').run();
+    cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_rating ON models(rating)').run();
+    cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_favorite ON models(favorite)').run();
     
     // Clean up any database objects that reference models_old (from old migrations)
     cleanupModelsOldReferences();
@@ -3523,17 +3574,17 @@ function migrateDateAddedColumn() {
     console.log('Checking for dateAdded column migration...');
     
     // Check if dateAdded column exists
-    const tableInfo = db.prepare("PRAGMA table_info(models)").all();
+    const tableInfo = cachedPrepare("PRAGMA table_info(models)").all();
     const hasDateAdded = tableInfo.some(col => col.name === 'dateAdded');
     
     if (!hasDateAdded) {
       console.log('dateAdded column not found. Adding it...');
       
       // Add the column
-      db.prepare('ALTER TABLE models ADD COLUMN dateAdded DATETIME').run();
+      cachedPrepare('ALTER TABLE models ADD COLUMN dateAdded DATETIME').run();
       
       // For existing records, set dateAdded = modifiedDate as fallback, or current timestamp if modifiedDate is null
-      db.prepare(`
+      cachedPrepare(`
         UPDATE models 
         SET dateAdded = COALESCE(modifiedDate, datetime('now'))
         WHERE dateAdded IS NULL
@@ -3555,12 +3606,12 @@ function migrateDateAddedColumn() {
 function migrateIsNewColumn() {
   try {
     console.log('Checking for isNew column migration...');
-    const tableInfo = db.prepare('PRAGMA table_info(models)').all();
+    const tableInfo = cachedPrepare('PRAGMA table_info(models)').all();
     const hasIsNew = tableInfo.some(col => col.name === 'isNew');
     if (!hasIsNew) {
       console.log('isNew column not found. Adding it...');
-      db.prepare('ALTER TABLE models ADD COLUMN isNew INTEGER DEFAULT 1').run();
-      db.prepare('UPDATE models SET isNew = 0').run();
+      cachedPrepare('ALTER TABLE models ADD COLUMN isNew INTEGER DEFAULT 1').run();
+      cachedPrepare('UPDATE models SET isNew = 0').run();
       console.log('isNew column added; existing models marked as not new');
     } else {
       console.log('isNew column already exists');
@@ -3576,18 +3627,18 @@ function migrateIsNewColumn() {
 function migrateRatingFavoriteColumns() {
   try {
     console.log('Checking for rating/favorite column migration...');
-    const tableInfo = db.prepare('PRAGMA table_info(models)').all();
+    const tableInfo = cachedPrepare('PRAGMA table_info(models)').all();
     const hasRating = tableInfo.some(col => col.name === 'rating');
     const hasFavorite = tableInfo.some(col => col.name === 'favorite');
     if (!hasRating) {
       console.log('rating column not found. Adding it...');
-      db.prepare('ALTER TABLE models ADD COLUMN rating INTEGER DEFAULT 0').run();
-      db.prepare('UPDATE models SET rating = 0 WHERE rating IS NULL').run();
+      cachedPrepare('ALTER TABLE models ADD COLUMN rating INTEGER DEFAULT 0').run();
+      cachedPrepare('UPDATE models SET rating = 0 WHERE rating IS NULL').run();
     }
     if (!hasFavorite) {
       console.log('favorite column not found. Adding it...');
-      db.prepare('ALTER TABLE models ADD COLUMN favorite INTEGER DEFAULT 0').run();
-      db.prepare('UPDATE models SET favorite = 0 WHERE favorite IS NULL').run();
+      cachedPrepare('ALTER TABLE models ADD COLUMN favorite INTEGER DEFAULT 0').run();
+      cachedPrepare('UPDATE models SET favorite = 0 WHERE favorite IS NULL').run();
     }
     return true;
   } catch (error) {
@@ -3611,7 +3662,7 @@ function migratePrintLifecycleColumns() {
 function migrateBundleColumns() {
   try {
     console.log('Checking for bundle column migration...');
-    const tableInfo = db.prepare('PRAGMA table_info(models)').all();
+    const tableInfo = cachedPrepare('PRAGMA table_info(models)').all();
     const names = new Set(tableInfo.map((col) => col.name));
     const additions = [
       ['bundleKey', 'TEXT'],
@@ -3620,15 +3671,15 @@ function migrateBundleColumns() {
     ];
     for (const [col, ddl] of additions) {
       if (!names.has(col)) {
-        db.prepare(`ALTER TABLE models ADD COLUMN ${col} ${ddl}`).run();
+        cachedPrepare(`ALTER TABLE models ADD COLUMN ${col} ${ddl}`).run();
         console.log(`Added models.${col}`);
       }
     }
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_models_bundlekey ON models(bundleKey)').run();
+    cachedPrepare('CREATE INDEX IF NOT EXISTS idx_models_bundlekey ON models(bundleKey)').run();
 
     // After the one-shot zip-only migration, skip the heavy folder-clear + backfill work.
     // New scans/saves already persist bundle fields; remaining NULL keys are intentional for non-zips.
-    const migrationDone = db.prepare(
+    const migrationDone = cachedPrepare(
       'SELECT value FROM settings WHERE key = ?'
     ).get('bundleMigrationZipOnlyComplete')?.value;
     if (migrationDone === '1') {
@@ -3636,7 +3687,7 @@ function migrateBundleColumns() {
     }
 
     // Clear legacy folder bundles — only ZIP archives should group via bundle fields.
-    const cleared = db.prepare(`
+    const cleared = cachedPrepare(`
       UPDATE models
       SET bundleKey = NULL, bundleLabel = NULL, bundleKind = NULL
       WHERE bundleKind = 'folder'
@@ -3648,7 +3699,7 @@ function migrateBundleColumns() {
 
     // Only backfill zip entries still missing keys. Non-zip models correctly stay NULL;
     // selecting all NULL rows re-wrote the whole library on every cold start.
-    const rows = db.prepare(`
+    const rows = cachedPrepare(`
       SELECT id, filePath FROM models
       WHERE (bundleKey IS NULL OR bundleKey = '')
         AND instr(filePath, '::') > 0
@@ -3669,7 +3720,7 @@ function migrateBundleColumns() {
       console.log(`Backfilled bundle fields for ${rows.length} zip model(s)`);
     }
 
-    db.prepare(
+    cachedPrepare(
       `INSERT INTO settings (key, value) VALUES ('bundleMigrationZipOnlyComplete', '1')
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`
     ).run();
@@ -3688,13 +3739,13 @@ function migrateBundleColumns() {
  */
 function clearFailurePlaceholderThumbnails() {
   try {
-    const done = db.prepare(
+    const done = cachedPrepare(
       'SELECT value FROM settings WHERE key = ?'
     ).get('failurePlaceholderThumbCleanupComplete')?.value;
     if (done === '1') return true;
 
     console.log('Clearing likely failure-placeholder thumbnails (one-shot)...');
-    const cleared = db.prepare(`
+    const cleared = cachedPrepare(`
       UPDATE models
       SET thumbnail = '3d.png'
       WHERE thumbnail IS NOT NULL
@@ -3705,7 +3756,7 @@ function clearFailurePlaceholderThumbnails() {
       console.log(`Reset ${cleared.changes} small data-URL thumbnail(s) to 3d.png for regeneration`);
     }
 
-    db.prepare(
+    cachedPrepare(
       `INSERT INTO settings (key, value) VALUES ('failurePlaceholderThumbCleanupComplete', '1')
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`
     ).run();
@@ -3729,7 +3780,7 @@ function cleanupModelsOldReferences() {
     console.log('Checking for database objects referencing models_old...');
     
     // Check for triggers that reference models_old
-    const triggers = db.prepare(`
+    const triggers = cachedPrepare(`
       SELECT name, sql 
       FROM sqlite_master 
       WHERE type='trigger' 
@@ -3740,7 +3791,7 @@ function cleanupModelsOldReferences() {
       console.log(`Found ${triggers.length} trigger(s) referencing models_old. Removing them...`);
       for (const trigger of triggers) {
         try {
-          db.prepare(`DROP TRIGGER IF EXISTS ${trigger.name}`).run();
+          cachedPrepare(`DROP TRIGGER IF EXISTS ${trigger.name}`).run();
           console.log(`Removed trigger: ${trigger.name}`);
         } catch (error) {
           console.error(`Error removing trigger ${trigger.name}:`, error);
@@ -3749,7 +3800,7 @@ function cleanupModelsOldReferences() {
     }
     
     // Check for views that reference models_old
-    const views = db.prepare(`
+    const views = cachedPrepare(`
       SELECT name, sql 
       FROM sqlite_master 
       WHERE type='view' 
@@ -3760,7 +3811,7 @@ function cleanupModelsOldReferences() {
       console.log(`Found ${views.length} view(s) referencing models_old. Removing them...`);
       for (const view of views) {
         try {
-          db.prepare(`DROP VIEW IF EXISTS ${view.name}`).run();
+          cachedPrepare(`DROP VIEW IF EXISTS ${view.name}`).run();
           console.log(`Removed view: ${view.name}`);
         } catch (error) {
           console.error(`Error removing view ${view.name}:`, error);
@@ -3769,7 +3820,7 @@ function cleanupModelsOldReferences() {
     }
     
     // Check for indexes that reference models_old (unlikely but possible)
-    const indexes = db.prepare(`
+    const indexes = cachedPrepare(`
       SELECT name 
       FROM sqlite_master 
       WHERE type='index' 
@@ -3780,7 +3831,7 @@ function cleanupModelsOldReferences() {
       console.log(`Found ${indexes.length} index(es) referencing models_old. Removing them...`);
       for (const index of indexes) {
         try {
-          db.prepare(`DROP INDEX IF EXISTS ${index.name}`).run();
+          cachedPrepare(`DROP INDEX IF EXISTS ${index.name}`).run();
           console.log(`Removed index: ${index.name}`);
         } catch (error) {
           console.error(`Error removing index ${index.name}:`, error);
@@ -3811,9 +3862,9 @@ function initializeDefaultSettings() {
     console.log('Initializing default settings...');
     
     // Check if settings table exists
-    const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'").get();
+    const tableExists = cachedPrepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'").get();
     if (!tableExists) {
-      db.prepare('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)').run();
+      cachedPrepare('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)').run();
     }
 
     // Define default settings
@@ -4501,7 +4552,7 @@ function createApplicationMenu() {
 
 ipcMain.handle('load-directory', async () => {
   try {
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('directoryPath');
+    const row = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('directoryPath');
     return row ? row.value : null;
   } catch (error) {
     console.error('Error loading directory:', error);
@@ -4511,7 +4562,7 @@ ipcMain.handle('load-directory', async () => {
 
 ipcMain.handle('save-directory', async (event, directoryPath) => {
   try {
-    db.prepare(`
+    cachedPrepare(`
       INSERT INTO settings (key, value) 
       VALUES (?, ?) 
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -4644,7 +4695,7 @@ async function calculateFileHash(filePath, options = null) {
 // Update the isValidFile function to get the max file size from settings
 async function getMaxFileSize() {
   try {
-    const maxFileSize = await db.prepare('SELECT value FROM settings WHERE key = ?').get('maxFileSizeMB');
+    const maxFileSize = await cachedPrepare('SELECT value FROM settings WHERE key = ?').get('maxFileSizeMB');
     return maxFileSize ? parseInt(maxFileSize.value) * 1024 * 1024 : 50 * 1024 * 1024;
   } catch (error) {
     console.error('Error getting max file size:', error);
@@ -4668,14 +4719,14 @@ function directoryScanPrefixSqlParam(scanDirectoryPath) {
 // pathMetadataUseDesigner, pathMetadataUseParentModel, pathMetadataDesignerIndex, pathMetadataParentModelIndex.
 function applyPathMetadataFromSegments(scanRootPath, filePaths) {
   if (!db || !db.prepare) return;
-  const enabledRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('pathMetadataStlHomeEnabled');
+  const enabledRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('pathMetadataStlHomeEnabled');
   if (!enabledRow || enabledRow.value !== '1') return;
-  const directionRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('pathMetadataStlHomeDirection');
+  const directionRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('pathMetadataStlHomeDirection');
   const fromRoot = directionRow?.value === 'fromRoot';
-  const useDesigner = db.prepare('SELECT value FROM settings WHERE key = ?').get('pathMetadataUseDesigner');
-  const useParentModel = db.prepare('SELECT value FROM settings WHERE key = ?').get('pathMetadataUseParentModel');
-  const designerIndexRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('pathMetadataDesignerIndex');
-  const parentModelIndexRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('pathMetadataParentModelIndex');
+  const useDesigner = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('pathMetadataUseDesigner');
+  const useParentModel = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('pathMetadataUseParentModel');
+  const designerIndexRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('pathMetadataDesignerIndex');
+  const parentModelIndexRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('pathMetadataParentModelIndex');
   const applyDesigner = useDesigner?.value === '1';
   const applyParentModel = useParentModel?.value === '1';
   if (!applyDesigner && !applyParentModel) return;
@@ -4745,7 +4796,7 @@ async function removeNonExistentFiles(scanDirectoryPath, window = null, excludeD
     const prefixParam = directoryScanPrefixSqlParam(scanDirectoryPath);
 
     // Query only models under this directory: unify '\' and '/' so LIKE sees the same prefix as scanDirectoryPath.
-    const modelsInDirectory = db.prepare(`
+    const modelsInDirectory = cachedPrepare(`
       SELECT filePath, id FROM models
       WHERE REPLACE(LOWER(filePath), CHAR(92), '/') LIKE ?
     `).all(prefixParam);
@@ -4907,7 +4958,7 @@ async function removeNonExistentFiles(scanDirectoryPath, window = null, excludeD
 function readStlHomeExcludeDirectories() {
   try {
     if (!db) return [];
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('stlHomeExcludeDirectories');
+    const row = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('stlHomeExcludeDirectories');
     if (!row || !row.value) return [];
     const parsed = JSON.parse(row.value);
     if (!Array.isArray(parsed)) return [];
@@ -4952,11 +5003,11 @@ async function scanDirectoryHandler(event, directoryPath, options = {}) {
     const excludeDirectories = stlHomeExcludeDirectoriesForScan(directoryPath, options);
     
     // Read enableZipArchives and scanAdditionalFileTypes from database
-    const zipSetting = db.prepare('SELECT value FROM settings WHERE key = ?').get('enableZipArchives');
+    const zipSetting = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('enableZipArchives');
     const enableZipArchives = zipSetting && zipSetting.value === '1';
     let scanExtensions = ['.stl', '.3mf'];
     try {
-      const scanTypesSetting = db.prepare('SELECT value FROM settings WHERE key = ?').get('scanAdditionalFileTypes');
+      const scanTypesSetting = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('scanAdditionalFileTypes');
       if (scanTypesSetting && scanTypesSetting.value) {
         const selectedIds = JSON.parse(scanTypesSetting.value);
         if (Array.isArray(selectedIds)) scanExtensions = getScanExtensions(selectedIds);
@@ -5082,7 +5133,7 @@ async function scanDirectoryHandler(event, directoryPath, options = {}) {
         for (let i = 0; i < unknown.length; i += existenceCheckBatchSize) {
           const pathBatch = unknown.slice(i, i + existenceCheckBatchSize);
           const placeholders = pathBatch.map(() => '?').join(',');
-          const existing = db.prepare(`SELECT filePath FROM models WHERE filePath IN (${placeholders})`).all(...pathBatch);
+          const existing = cachedPrepare(`SELECT filePath FROM models WHERE filePath IN (${placeholders})`).all(...pathBatch);
           existing.forEach(row => ingestState.existingFilePaths.add(row.filePath));
         }
 
@@ -5295,7 +5346,7 @@ ipcMain.handle('get-model', async (event, filePath) => {
     if (!model) return null;
 
     // Get tags for this model
-    const tags = db.prepare(`
+    const tags = cachedPrepare(`
       SELECT t.name 
       FROM tags t 
       JOIN model_tags mt ON mt.tag_id = t.id 
@@ -5345,7 +5396,7 @@ ipcMain.handle('save-thumbnail', async (event, filePath, thumbnail) => {
 
 ipcMain.handle('get-designers', async () => {
   try {
-    const rows = db.prepare("SELECT DISTINCT designer FROM models WHERE designer IS NOT NULL AND designer != ''").all();
+    const rows = cachedPrepare("SELECT DISTINCT designer FROM models WHERE designer IS NOT NULL AND designer != ''").all();
     return rows.map(row => row.designer);
   } catch (error) {
     console.error('Error getting designers:', error);
@@ -5355,7 +5406,7 @@ ipcMain.handle('get-designers', async () => {
 
 ipcMain.handle('get-licenses', async () => {
   try {
-    const rows = db.prepare("SELECT DISTINCT license FROM models WHERE license IS NOT NULL AND license != ''").all();
+    const rows = cachedPrepare("SELECT DISTINCT license FROM models WHERE license IS NOT NULL AND license != ''").all();
     return rows.map(row => row.license);
   } catch (error) {
     console.error('Error getting licenses:', error);
@@ -5365,13 +5416,14 @@ ipcMain.handle('get-licenses', async () => {
 
 ipcMain.handle('get-models-by-designer', async (event, designer) => {
   try {
-    const rows = db.prepare(`
+    const rows = cachedPrepare(`
       SELECT id, filePath, fileName, designer, source, notes, printed, print_status, print_count, last_printed_at, parentModel, hash, size, license, modifiedDate, dateAdded, isNew, rating, favorite
       FROM models WHERE designer = ?
     `).all(designer);
+    const thumbnails = loadThumbnailsForModels(rows.map((row) => row.filePath));
     return rows.map((row) => ({
       ...row,
-      thumbnail: loadThumbnailForModel(row.filePath)
+      thumbnail: thumbnails.get(row.filePath) ?? null
     }));
   } catch (error) {
     console.error('Error getting models by designer:', error);
@@ -5452,9 +5504,9 @@ const selectCols = MODEL_LIST_COLUMNS;
     let models;
     if (limit === 0) {
       // When limit is 0, load all models without a limit
-      models = db.prepare(`SELECT ${selectCols} FROM models ${orderClause}`).all();
+      models = cachedPrepare(`SELECT ${selectCols} FROM models ${orderClause}`).all();
     } else {
-      models = db.prepare(`SELECT ${selectCols} FROM models ${orderClause} LIMIT ?`).all(limit);
+      models = cachedPrepare(`SELECT ${selectCols} FROM models ${orderClause} LIMIT ?`).all(limit);
     }
     return models;
   } catch (error) {
@@ -6221,7 +6273,7 @@ ipcHandlerRegistry.set('get-models-filtered', getModelsFilteredHandler);
 
 ipcMain.handle('get-parent-models', async () => {
   try {
-    const rows = db.prepare("SELECT DISTINCT parentModel FROM models WHERE parentModel IS NOT NULL AND parentModel != ''").all();
+    const rows = cachedPrepare("SELECT DISTINCT parentModel FROM models WHERE parentModel IS NOT NULL AND parentModel != ''").all();
     return rows.map(row => row.parentModel);
   } catch (error) {
     console.error('Error getting parent models:', error);
@@ -6231,7 +6283,7 @@ ipcMain.handle('get-parent-models', async () => {
 
 async function getAllTagsHandler() {
   try {
-    return db.prepare(`
+    return cachedPrepare(`
       SELECT 
         t.id,
         t.name,
@@ -6252,8 +6304,8 @@ ipcHandlerRegistry.set('get-all-tags', getAllTagsHandler);
 
 async function saveTagHandler(event, tagName) {
   try {
-    db.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(tagName);
-    return db.prepare('SELECT id, name FROM tags WHERE name = ?').get(tagName);
+    cachedPrepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(tagName);
+    return cachedPrepare('SELECT id, name FROM tags WHERE name = ?').get(tagName);
   } catch (error) {
     console.error('Error saving tag:', error);
     throw error;
@@ -6275,7 +6327,7 @@ ipcHandlerRegistry.set('rename-tag', renameTagHandler);
 
 function getFilamentsForModel(modelId) {
   if (modelId == null) return [];
-  return db.prepare(`
+  return cachedPrepare(`
     SELECT f.id, f.name, f.vendor, f.material, f.color_hex, f.diameter, f.spoolman_id, f.source
     FROM filaments f
     JOIN model_filaments mf ON mf.filament_id = f.id
@@ -6301,7 +6353,7 @@ function normalizeFilamentIds(raw) {
 }
 
 function replaceModelFilaments(modelId, filamentIds) {
-  db.prepare('DELETE FROM model_filaments WHERE model_id = ?').run(modelId);
+  cachedPrepare('DELETE FROM model_filaments WHERE model_id = ?').run(modelId);
   if (!filamentIds || filamentIds.length === 0) return;
   const insert = db.prepare('INSERT OR IGNORE INTO model_filaments (model_id, filament_id) VALUES (?, ?)');
   const exists = db.prepare('SELECT 1 FROM filaments WHERE id = ?');
@@ -6311,8 +6363,8 @@ function replaceModelFilaments(modelId, filamentIds) {
 }
 
 function deleteModelJunctionRows(modelId) {
-  db.prepare('DELETE FROM model_tags WHERE model_id = ?').run(modelId);
-  db.prepare('DELETE FROM model_filaments WHERE model_id = ?').run(modelId);
+  cachedPrepare('DELETE FROM model_tags WHERE model_id = ?').run(modelId);
+  cachedPrepare('DELETE FROM model_filaments WHERE model_id = ?').run(modelId);
   printEvents.deletePrintRowsForModel(db, modelId);
 }
 
@@ -6331,9 +6383,9 @@ function deleteModelsByIds(modelIds) {
     const batch = ids.slice(i, i + batchSize);
     const placeholders = batch.map(() => '?').join(',');
     printEvents.deletePrintRowsForModels(db, batch);
-    db.prepare(`DELETE FROM model_tags WHERE model_id IN (${placeholders})`).run(...batch);
-    db.prepare(`DELETE FROM model_filaments WHERE model_id IN (${placeholders})`).run(...batch);
-    db.prepare(`DELETE FROM models WHERE id IN (${placeholders})`).run(...batch);
+    cachedPrepare(`DELETE FROM model_tags WHERE model_id IN (${placeholders})`).run(...batch);
+    cachedPrepare(`DELETE FROM model_filaments WHERE model_id IN (${placeholders})`).run(...batch);
+    cachedPrepare(`DELETE FROM models WHERE id IN (${placeholders})`).run(...batch);
   }
 }
 
@@ -6348,7 +6400,7 @@ function deleteModelsByFilePaths(filePaths) {
     for (let i = 0; i < paths.length; i += batchSize) {
       const batch = paths.slice(i, i + batchSize);
       const placeholders = batch.map(() => '?').join(',');
-      const rows = db.prepare(
+      const rows = cachedPrepare(
         `SELECT id, filePath, fileName FROM models WHERE filePath IN (${placeholders})`
       ).all(...batch);
       for (const row of rows) {
@@ -6374,9 +6426,9 @@ function upsertImportedFilament(filament) {
   const source = spoolmanId ? 'spoolman' : (filament.source === 'spoolman' ? 'spoolman' : 'manual');
 
   if (spoolmanId) {
-    const existing = db.prepare('SELECT id FROM filaments WHERE spoolman_id = ?').get(spoolmanId);
+    const existing = cachedPrepare('SELECT id FROM filaments WHERE spoolman_id = ?').get(spoolmanId);
     if (existing) {
-      db.prepare(`
+      cachedPrepare(`
         UPDATE filaments SET name = ?, vendor = ?, material = ?, color_hex = ?, diameter = ?, source = 'spoolman'
         WHERE id = ?
       `).run(name, vendor, material, colorHex, Number.isFinite(diameter) ? diameter : null, existing.id);
@@ -6384,7 +6436,7 @@ function upsertImportedFilament(filament) {
     }
   }
 
-  const existingManual = db.prepare(`
+  const existingManual = cachedPrepare(`
     SELECT id FROM filaments
     WHERE name = ?
       AND IFNULL(vendor, '') = IFNULL(?, '')
@@ -6394,7 +6446,7 @@ function upsertImportedFilament(filament) {
   `).get(name, vendor, material, colorHex);
   if (existingManual) return existingManual.id;
 
-  const result = db.prepare(`
+  const result = cachedPrepare(`
     INSERT INTO filaments (name, vendor, material, color_hex, diameter, spoolman_id, source)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(name, vendor, material, colorHex, Number.isFinite(diameter) ? diameter : null, spoolmanId || null, source);
@@ -6403,7 +6455,7 @@ function upsertImportedFilament(filament) {
 
 async function getAllFilamentsHandler() {
   try {
-    return db.prepare(`
+    return cachedPrepare(`
       SELECT
         f.id, f.name, f.vendor, f.material, f.color_hex, f.diameter, f.spoolman_id, f.source,
         COUNT(DISTINCT mf.model_id) as model_count
@@ -6429,22 +6481,22 @@ async function saveFilamentHandler(event, filament) {
     const diameter = filament?.diameter == null || filament.diameter === '' ? 1.75 : Number(filament.diameter);
     const id = filament?.id != null ? Number(filament.id) : null;
     if (id) {
-      const existing = db.prepare('SELECT id, source FROM filaments WHERE id = ?').get(id);
+      const existing = cachedPrepare('SELECT id, source FROM filaments WHERE id = ?').get(id);
       if (!existing) throw new Error('Filament not found');
       if (existing.source === 'spoolman') {
         throw new Error('Synced filaments are edited in Spoolman. Sync again to update them here.');
       }
-      db.prepare(`
+      cachedPrepare(`
         UPDATE filaments SET name = ?, vendor = ?, material = ?, color_hex = ?, diameter = ?
         WHERE id = ?
       `).run(name, vendor, material, colorHex, Number.isFinite(diameter) ? diameter : 1.75, id);
-      return db.prepare('SELECT * FROM filaments WHERE id = ?').get(id);
+      return cachedPrepare('SELECT * FROM filaments WHERE id = ?').get(id);
     }
-    const result = db.prepare(`
+    const result = cachedPrepare(`
       INSERT INTO filaments (name, vendor, material, color_hex, diameter, spoolman_id, source)
       VALUES (?, ?, ?, ?, ?, NULL, 'manual')
     `).run(name, vendor, material, colorHex, Number.isFinite(diameter) ? diameter : 1.75);
-    return db.prepare('SELECT * FROM filaments WHERE id = ?').get(result.lastInsertRowid);
+    return cachedPrepare('SELECT * FROM filaments WHERE id = ?').get(result.lastInsertRowid);
   } catch (error) {
     console.error('Error saving filament:', error);
     throw error;
@@ -6455,9 +6507,9 @@ ipcMain.handle('save-filament', saveFilamentHandler);
 async function deleteFilamentHandler(event, filamentId) {
   try {
     return db.transaction(() => {
-      db.prepare('DELETE FROM model_filaments WHERE filament_id = ?').run(filamentId);
+      cachedPrepare('DELETE FROM model_filaments WHERE filament_id = ?').run(filamentId);
       printEvents.deletePrintEventFilamentsForFilament(db, filamentId);
-      db.prepare('DELETE FROM filaments WHERE id = ?').run(filamentId);
+      cachedPrepare('DELETE FROM filaments WHERE id = ?').run(filamentId);
       return true;
     })();
   } catch (error) {
@@ -6486,7 +6538,7 @@ function normalizePartStockQuantity(value) {
 async function getAllPartsHandler() {
   try {
     printEvents.ensurePartsSchema(db);
-    return db.prepare(`
+    return cachedPrepare(`
       SELECT id, name, category, quantity, unit, notes, low_stock
       FROM parts
       ORDER BY name COLLATE NOCASE, id ASC
@@ -6511,20 +6563,20 @@ async function savePartHandler(event, part) {
     const id = part?.id != null && part.id !== '' ? Number(part.id) : null;
     if (id) {
       if (!Number.isInteger(id) || id <= 0) throw new Error('Invalid part');
-      const existing = db.prepare('SELECT id FROM parts WHERE id = ?').get(id);
+      const existing = cachedPrepare('SELECT id FROM parts WHERE id = ?').get(id);
       if (!existing) throw new Error('Part not found');
-      db.prepare(`
+      cachedPrepare(`
         UPDATE parts
         SET name = ?, category = ?, quantity = ?, unit = ?, notes = ?, low_stock = ?
         WHERE id = ?
       `).run(name, category, quantity, unit, notes, lowStock, id);
-      return db.prepare('SELECT * FROM parts WHERE id = ?').get(id);
+      return cachedPrepare('SELECT * FROM parts WHERE id = ?').get(id);
     }
-    const result = db.prepare(`
+    const result = cachedPrepare(`
       INSERT INTO parts (name, category, quantity, unit, notes, low_stock)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(name, category, quantity, unit, notes, lowStock);
-    return db.prepare('SELECT * FROM parts WHERE id = ?').get(result.lastInsertRowid);
+    return cachedPrepare('SELECT * FROM parts WHERE id = ?').get(result.lastInsertRowid);
   } catch (error) {
     console.error('Error saving part:', error);
     throw error;
@@ -6538,7 +6590,7 @@ async function deletePartHandler(event, partId) {
     const id = Number(partId);
     if (!Number.isInteger(id) || id <= 0) throw new Error('Invalid part');
     return db.transaction(() => {
-      const result = db.prepare('DELETE FROM parts WHERE id = ?').run(id);
+      const result = cachedPrepare('DELETE FROM parts WHERE id = ?').run(id);
       return result.changes > 0;
     })();
   } catch (error) {
@@ -6752,8 +6804,8 @@ async function completePrinterReminderHandler(event, payload) {
 ipcMain.handle('complete-printer-reminder', completePrinterReminderHandler);
 
 function readSpoolmanSettings(urlOverride, tokenOverride) {
-  const urlRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('spoolmanUrl');
-  const tokenRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('spoolmanApiToken');
+  const urlRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('spoolmanUrl');
+  const tokenRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('spoolmanApiToken');
   const url = urlOverride != null && String(urlOverride).trim() !== '' ? String(urlOverride).trim() : (urlRow?.value || '');
   const token = tokenOverride != null ? String(tokenOverride) : (tokenRow?.value || '');
   return { url, token };
@@ -6770,11 +6822,11 @@ async function syncSpoolmanFilamentsHandler(event, url, token) {
   const settings = readSpoolmanSettings(url, token);
   if (!settings.url) throw new Error('Spoolman URL is required');
   if (url != null && String(url).trim()) {
-    db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    cachedPrepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
       .run('spoolmanUrl', String(url).trim());
   }
   if (token !== undefined) {
-    db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    cachedPrepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
       .run('spoolmanApiToken', String(token || ''));
   }
   const remote = await spoolman.fetchAllFilaments(settings.url, settings.token);
@@ -6829,7 +6881,7 @@ ipcMain.handle('get-model-count-by-file-type-ids', async (event, catalogIds) => 
     if (exts.length === 0) return 0;
     const conditions = exts.map(() => 'LOWER(fileName) LIKE ?').join(' OR ');
     const params = exts.map(ext => `%${ext}`);
-    const row = db.prepare(`SELECT COUNT(*) AS count FROM models WHERE ${conditions}`).get(...params);
+    const row = cachedPrepare(`SELECT COUNT(*) AS count FROM models WHERE ${conditions}`).get(...params);
     return row ? row.count : 0;
   } catch (error) {
     console.error('Error getting model count by file type ids:', error);
@@ -6843,7 +6895,7 @@ ipcMain.handle('remove-models-by-file-type-ids', async (event, catalogIds) => {
     if (exts.length === 0) return { deleted: 0 };
     const conditions = exts.map(() => 'LOWER(fileName) LIKE ?').join(' OR ');
     const params = exts.map(ext => `%${ext}`);
-    const modelRows = db.prepare(`SELECT id FROM models WHERE ${conditions}`).all(...params);
+    const modelRows = cachedPrepare(`SELECT id FROM models WHERE ${conditions}`).all(...params);
     const ids = modelRows.map(r => r.id);
     if (ids.length === 0) return { deleted: 0 };
     const deleted = db.transaction(() => {
@@ -6860,7 +6912,7 @@ ipcMain.handle('remove-models-by-file-type-ids', async (event, catalogIds) => {
 const getSettingHandler = async (event, key) => {
   try {
     console.log('Main Process - Getting setting:', key);
-    const result = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    const result = cachedPrepare('SELECT value FROM settings WHERE key = ?').get(key);
     console.log('Main Process - Setting value:', result?.value);
     return result?.value || null;
   } catch (error) {
@@ -6894,7 +6946,7 @@ const saveSettingHandler = async (event, key, value) => {
     
     // If this is the CollectUsage setting being changed, track the change
     if (key === 'CollectUsage') {
-      const oldValue = db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value;
+      const oldValue = cachedPrepare('SELECT value FROM settings WHERE key = ?').get(key)?.value;
       console.log('CollectUsage - Old value:', oldValue, 'New value:', value);
       
       // If turning on analytics and it was previously off, track this event
@@ -6910,17 +6962,17 @@ const saveSettingHandler = async (event, key, value) => {
     }
     
     // Execute the database update
-    const result = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
+    const result = cachedPrepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
     console.log('Database update result:', result);
 
-    const verify = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    const verify = cachedPrepare('SELECT value FROM settings WHERE key = ?').get(key);
     if (verify?.value !== undefined) {
       console.log(`Verified setting '${key}' saved as:`, verify?.value);
     }
     
     // Verify the update
     if (key === 'CollectUsage') {
-      const newValue = db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value;
+      const newValue = cachedPrepare('SELECT value FROM settings WHERE key = ?').get(key)?.value;
       console.log('CollectUsage - Verified new value in database:', newValue);
     }
 
@@ -6944,7 +6996,7 @@ ipcHandlerRegistry.set('save-setting', saveSettingHandler);
 
 ipcMain.handle('purge-thumbnails', async () => {
   try {
-    db.prepare('UPDATE models SET thumbnail = NULL').run();
+    cachedPrepare('UPDATE models SET thumbnail = NULL').run();
     return true;
   } catch (error) {
     console.error('Error purging thumbnails:', error);
@@ -6991,7 +7043,7 @@ async function startServerThumbnailJobInternal(mode) {
 
   try {
     if (jobMode === 'all') {
-      db.prepare('UPDATE models SET thumbnail = NULL').run();
+      cachedPrepare('UPDATE models SET thumbnail = NULL').run();
     }
     sendToThumbnailWorker('run-server-thumbnail-job', { mode: jobMode });
     broadcastThumbnailJobEvent('thumbnail-job-progress', {
@@ -7060,7 +7112,7 @@ ipcMain.handle('get-server-thumbnail-job-status', async () => {
 function getScanExcludeNames() {
   try {
     if (!db) return new Set();
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('scanExcludeFolders');
+    const row = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('scanExcludeFolders');
     return normalizeExcludeNames(row && row.value);
   } catch (_) {
     return new Set();
@@ -7246,7 +7298,7 @@ function setDefaultThumbnailIndex(thumbnailString, index) {
 async function saveThumbnail(filePath, thumbnail) {
   try {
     const { value } = compressThumbnailBlob(thumbnail);
-    db.prepare('UPDATE models SET thumbnail = ? WHERE filePath = ?').run(value, filePath);
+    cachedPrepare('UPDATE models SET thumbnail = ? WHERE filePath = ?').run(value, filePath);
     return true;
   } catch (error) {
     console.error('Error saving thumbnail:', error);
@@ -7390,7 +7442,7 @@ let quitBackupFinished = false;
 
 function writeSettingValue(key, value) {
   if (!db) return;
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(value));
+  cachedPrepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(value));
 }
 
 function readScheduledBackupSettings() {
@@ -7825,7 +7877,7 @@ ipcMain.handle('restore-database', async (event, payload = null) => {
 // Export library handler
 function libraryTableExists(name) {
   try {
-    return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name));
+    return Boolean(cachedPrepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name));
   } catch (_) {
     return false;
   }
@@ -7833,7 +7885,7 @@ function libraryTableExists(name) {
 
 function libraryColumnExists(table, column) {
   try {
-    return db.prepare(`PRAGMA table_info(${table})`).all().some((col) => col.name === column);
+    return cachedPrepare(`PRAGMA table_info(${table})`).all().some((col) => col.name === column);
   } catch (_) {
     return false;
   }
@@ -7846,14 +7898,14 @@ function pushGrouped(map, key, value) {
 }
 
 function buildLibraryExportData() {
-  const models = db.prepare(`
+  const models = cachedPrepare(`
     SELECT id, filePath, fileName, designer, source, notes, printed, print_status, print_count, last_printed_at, parentModel, hash, size, license, modifiedDate, dateAdded, isNew, rating, favorite
     FROM models
   `).all();
 
   const tagsByModelId = new Map();
   if (libraryTableExists('tags') && libraryTableExists('model_tags')) {
-    for (const row of db.prepare(`
+    for (const row of cachedPrepare(`
       SELECT mt.model_id, t.name
       FROM tags t
       JOIN model_tags mt ON mt.tag_id = t.id
@@ -7864,7 +7916,7 @@ function buildLibraryExportData() {
 
   const filamentsByModelId = new Map();
   if (libraryTableExists('filaments') && libraryTableExists('model_filaments')) {
-    for (const row of db.prepare(`
+    for (const row of cachedPrepare(`
       SELECT mf.model_id, f.name, f.vendor, f.material, f.color_hex, f.diameter, f.spoolman_id, f.source
       FROM filaments f
       JOIN model_filaments mf ON mf.filament_id = f.id
@@ -7884,7 +7936,7 @@ function buildLibraryExportData() {
 
   const filamentsByEventId = new Map();
   if (libraryTableExists('print_events') && libraryTableExists('print_event_filaments') && libraryTableExists('filaments')) {
-    for (const row of db.prepare(`
+    for (const row of cachedPrepare(`
       SELECT pef.event_id, f.name, f.vendor, f.material, f.color_hex, f.diameter, f.spoolman_id, f.source
       FROM filaments f
       JOIN print_event_filaments pef ON pef.filament_id = f.id
@@ -7905,7 +7957,7 @@ function buildLibraryExportData() {
   const partsByEventId = new Map();
   if (libraryTableExists('print_events') && libraryTableExists('print_event_parts')) {
     const hasPartsCatalog = libraryTableExists('parts');
-    for (const row of db.prepare(`
+    for (const row of cachedPrepare(`
       SELECT pep.event_id,
              ${hasPartsCatalog ? 'COALESCE(p.name, pep.name)' : 'pep.name'} AS name,
              ${hasPartsCatalog ? 'p.category' : 'NULL'} AS category,
@@ -7935,7 +7987,7 @@ function buildLibraryExportData() {
     const printerJoin = hasPrinters && hasPrinterId
       ? 'LEFT JOIN printers pr ON pr.id = pe.printer_id'
       : '';
-    for (const row of db.prepare(`
+    for (const row of cachedPrepare(`
       SELECT pe.id, pe.model_id, pe.printed_at, pe.outcome, pe.quantity, pe.notes, pe.created_at
              ${printerSelect}
       FROM print_events pe
@@ -7960,7 +8012,7 @@ function buildLibraryExportData() {
 
   const logsByPrinterId = new Map();
   if (libraryTableExists('printer_maintenance_logs')) {
-    for (const row of db.prepare(`
+    for (const row of cachedPrepare(`
       SELECT printer_id, maintenance_type, title, description, performed_at, created_at
       FROM printer_maintenance_logs
       ORDER BY performed_at DESC, id DESC
@@ -7978,7 +8030,7 @@ function buildLibraryExportData() {
   const remindersByPrinterId = new Map();
   if (libraryTableExists('printer_maintenance_reminders')) {
     const hasLastCompleted = libraryColumnExists('printer_maintenance_reminders', 'last_completed_at');
-    for (const row of db.prepare(`
+    for (const row of cachedPrepare(`
       SELECT printer_id, title, maintenance_type, due_date, interval_days, notes, status,
              ${hasLastCompleted ? 'last_completed_at' : 'NULL AS last_completed_at'}, created_at
       FROM printer_maintenance_reminders
@@ -7998,7 +8050,7 @@ function buildLibraryExportData() {
   }
 
   const printers = libraryTableExists('printers')
-    ? db.prepare(`
+    ? cachedPrepare(`
         SELECT id, nickname, manufacturer, model, ${libraryColumnExists('printers', 'printer_type') ? 'printer_type' : 'NULL AS printer_type'}, firmware_type, is_klipper, web_url, notes, created_at, updated_at
         FROM printers
         ORDER BY nickname COLLATE NOCASE, id ASC
@@ -8019,7 +8071,7 @@ function buildLibraryExportData() {
     : [];
 
   const parts = libraryTableExists('parts')
-    ? db.prepare(`
+    ? cachedPrepare(`
         SELECT name, category, quantity, unit, notes, low_stock
         FROM parts
         ORDER BY name COLLATE NOCASE, id ASC
@@ -8027,7 +8079,7 @@ function buildLibraryExportData() {
     : [];
 
   const slicers = libraryTableExists('slicers')
-    ? db.prepare('SELECT name, path FROM slicers ORDER BY name COLLATE NOCASE, id ASC').all()
+    ? cachedPrepare('SELECT name, path FROM slicers ORDER BY name COLLATE NOCASE, id ASC').all()
     : [];
 
   return {
@@ -8116,7 +8168,7 @@ ipcMain.handle('import-library', async (event, payload = null) => {
     for (let i = 0; i < importData.models.length; i++) {
       const modelData = importData.models[i];
       try {
-        const existingModel = db.prepare('SELECT id FROM models WHERE filePath = ?').get(modelData.filePath);
+        const existingModel = cachedPrepare('SELECT id FROM models WHERE filePath = ?').get(modelData.filePath);
 
         let filamentIds;
         if (Array.isArray(modelData.filaments)) {
@@ -8222,7 +8274,7 @@ ipcMain.handle('import-library', async (event, payload = null) => {
 
 ipcMain.handle('get-duplicate-files', async () => {
   try {
-    const models = db.prepare(`
+    const models = cachedPrepare(`
       SELECT filePath, hash, size,
         CASE WHEN thumbnail IS NOT NULL AND thumbnail != '' AND thumbnail != '3d.png' THEN 1 ELSE 0 END AS hasThumbnail
       FROM models WHERE hash IS NOT NULL
@@ -8305,10 +8357,10 @@ ipcMain.handle('trash-file', async (event, filePath) => {
     await new Promise((resolve, reject) => {
       console.log('Deleting from database:', normalizedPath);
       db.transaction(() => {
-        const model = db.prepare('SELECT id FROM models WHERE filePath = ?').get(normalizedPath);
+        const model = cachedPrepare('SELECT id FROM models WHERE filePath = ?').get(normalizedPath);
         if (model) {
           deleteModelJunctionRows(model.id);
-          db.prepare('DELETE FROM models WHERE id = ?').run(model.id);
+          cachedPrepare('DELETE FROM models WHERE id = ?').run(model.id);
         }
       })();
       resolve();
@@ -8439,10 +8491,10 @@ async function deleteTagHandler(event, tagId) {
   try {
     return db.transaction(() => {
       // First delete from model_tags (child table)
-      db.prepare('DELETE FROM model_tags WHERE tag_id = ?').run(tagId);
+      cachedPrepare('DELETE FROM model_tags WHERE tag_id = ?').run(tagId);
           
           // Then delete the tag itself
-      db.prepare('DELETE FROM tags WHERE id = ?').run(tagId);
+      cachedPrepare('DELETE FROM tags WHERE id = ?').run(tagId);
       
       return true;
     })();
@@ -8456,7 +8508,7 @@ ipcHandlerRegistry.set('delete-tag', deleteTagHandler);
 
 async function getTagModelCountHandler(event, tagId) {
   return new Promise((resolve, reject) => {
-    const row = db.prepare('SELECT COUNT(*) as count FROM model_tags WHERE tag_id = ?').get(tagId);
+    const row = cachedPrepare('SELECT COUNT(*) as count FROM model_tags WHERE tag_id = ?').get(tagId);
     if (row) {
       resolve(row.count);
     } else {
@@ -8469,7 +8521,7 @@ ipcHandlerRegistry.set('get-tag-model-count', getTagModelCountHandler);
 
 ipcMain.handle('get-all-metadata', async () => {
   try {
-    return db.prepare(`
+    return cachedPrepare(`
       SELECT 'designer' as type, designer as name, COUNT(*) as model_count 
       FROM models 
       WHERE designer IS NOT NULL AND designer != '' 
@@ -8495,27 +8547,27 @@ ipcMain.handle('get-all-metadata', async () => {
 ipcMain.handle('get-stats', async () => {
   try {
     // Total model count
-    const totalModels = db.prepare('SELECT COUNT(*) as count FROM models').get();
+    const totalModels = cachedPrepare('SELECT COUNT(*) as count FROM models').get();
     const totalCount = totalModels ? totalModels.count : 0;
 
     // File type breakdown (count + disk usage)
-    const stlStats = db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(size), 0) as bytes FROM models WHERE LOWER(fileName) LIKE '%.stl'").get();
-    const threeMfStats = db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(size), 0) as bytes FROM models WHERE LOWER(fileName) LIKE '%.3mf'").get();
-    const otherStats = db.prepare("SELECT COUNT(*) as count, COALESCE(SUM(size), 0) as bytes FROM models WHERE LOWER(fileName) NOT LIKE '%.stl' AND LOWER(fileName) NOT LIKE '%.3mf'").get();
-    const totalBytesRow = db.prepare('SELECT COALESCE(SUM(size), 0) as bytes FROM models').get();
+    const stlStats = cachedPrepare("SELECT COUNT(*) as count, COALESCE(SUM(size), 0) as bytes FROM models WHERE LOWER(fileName) LIKE '%.stl'").get();
+    const threeMfStats = cachedPrepare("SELECT COUNT(*) as count, COALESCE(SUM(size), 0) as bytes FROM models WHERE LOWER(fileName) LIKE '%.3mf'").get();
+    const otherStats = cachedPrepare("SELECT COUNT(*) as count, COALESCE(SUM(size), 0) as bytes FROM models WHERE LOWER(fileName) NOT LIKE '%.stl' AND LOWER(fileName) NOT LIKE '%.3mf'").get();
+    const totalBytesRow = cachedPrepare('SELECT COALESCE(SUM(size), 0) as bytes FROM models').get();
     
     // Archived models (models inside ZIP files)
-    const archivedCount = db.prepare("SELECT COUNT(*) as count FROM models WHERE filePath LIKE '%::%'").get();
+    const archivedCount = cachedPrepare("SELECT COUNT(*) as count FROM models WHERE filePath LIKE '%::%'").get();
     
     // Models with metadata
-    const withDesigner = db.prepare("SELECT COUNT(*) as count FROM models WHERE designer IS NOT NULL AND designer != ''").get();
-    const withParentModel = db.prepare("SELECT COUNT(*) as count FROM models WHERE parentModel IS NOT NULL AND parentModel != ''").get();
-    const withLicense = db.prepare("SELECT COUNT(*) as count FROM models WHERE license IS NOT NULL AND license != ''").get();
-    const withTags = db.prepare("SELECT COUNT(DISTINCT model_id) as count FROM model_tags").get();
+    const withDesigner = cachedPrepare("SELECT COUNT(*) as count FROM models WHERE designer IS NOT NULL AND designer != ''").get();
+    const withParentModel = cachedPrepare("SELECT COUNT(*) as count FROM models WHERE parentModel IS NOT NULL AND parentModel != ''").get();
+    const withLicense = cachedPrepare("SELECT COUNT(*) as count FROM models WHERE license IS NOT NULL AND license != ''").get();
+    const withTags = cachedPrepare("SELECT COUNT(DISTINCT model_id) as count FROM model_tags").get();
     
     // Tag statistics
-    const totalTags = db.prepare('SELECT COUNT(*) as count FROM tags').get();
-    const mostUsedTag = db.prepare(`
+    const totalTags = cachedPrepare('SELECT COUNT(*) as count FROM tags').get();
+    const mostUsedTag = cachedPrepare(`
       SELECT t.name, COUNT(mt.model_id) as count 
       FROM tags t 
       JOIN model_tags mt ON t.id = mt.tag_id 
@@ -8841,7 +8893,7 @@ ipcMain.handle('rename-metadata', async (event, type, oldName, newName) => {
     }
 
     // Check if new name already exists for this type (for merge information)
-    const existing = db.prepare(`
+    const existing = cachedPrepare(`
       SELECT COUNT(*) as count 
       FROM models 
       WHERE ${type} = ? AND ${type} IS NOT NULL AND ${type} != ''
@@ -8851,7 +8903,7 @@ ipcMain.handle('rename-metadata', async (event, type, oldName, newName) => {
     const isMerge = existingCount > 0;
 
     // Update all models with the old name to the new name (merge if new name exists)
-    const result = db.prepare(`
+    const result = cachedPrepare(`
       UPDATE models 
       SET ${type} = ? 
       WHERE ${type} = ?
@@ -8882,7 +8934,7 @@ ipcMain.handle('delete-metadata', async (event, type, name) => {
     }
 
     // Set the field to NULL for all models with that value
-    const result = db.prepare(`
+    const result = cachedPrepare(`
       UPDATE models 
       SET ${type} = NULL 
       WHERE ${type} = ?
@@ -8996,7 +9048,7 @@ const clearNewFlagsHandler = async () => {
         verbose: DEBUG ? console.log : null
       });
     }
-    const result = db.prepare('UPDATE models SET isNew = 0 WHERE isNew = 1').run();
+    const result = cachedPrepare('UPDATE models SET isNew = 0 WHERE isNew = 1').run();
     return { success: true, cleared: result.changes || 0 };
   } catch (error) {
     console.error('Error clearing new flags:', error);
@@ -9290,9 +9342,9 @@ ipcMain.handle('show-context-menu', async (event, fileIdentifier) => {
   let slicers = [];
   try {
     // Ensure the slicers table exists before querying it
-    const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
+    const tableExists = cachedPrepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
     if (tableExists) {
-      slicers = db.prepare('SELECT * FROM slicers').all();
+      slicers = cachedPrepare('SELECT * FROM slicers').all();
     } else {
       // Create the table if it doesn't exist
       ensureSlicersTableExists();
@@ -9459,13 +9511,13 @@ ipcMain.handle('show-context-menu', async (event, fileIdentifier) => {
   });
 
   // Check if API key exists in settings
-  const apiKeyRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('apiKey');
+  const apiKeyRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('apiKey');
   const apiKey = apiKeyRow ? apiKeyRow.value : null;
   
   // Check AI service type
-  const aiServiceRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiService');
+  const aiServiceRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiService');
   const aiService = aiServiceRow ? aiServiceRow.value : 'openai';
-  const apiEndpointRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('apiEndpoint');
+  const apiEndpointRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('apiEndpoint');
   const apiEndpoint = apiEndpointRow ? apiEndpointRow.value : null;
   const aitaggingForMenu = require('./aitagging');
   
@@ -9556,7 +9608,7 @@ ipcMain.handle('show-context-menu', async (event, fileIdentifier) => {
             // For single file, also open dialog immediately with "Generating..." status
             const singleModel = getModelByFilePath(filesToProcess[0], { includeThumbnail: true });
             if (singleModel) {
-              const modelTagRows = db.prepare(`
+              const modelTagRows = cachedPrepare(`
                 SELECT t.name 
                 FROM tags t
                 JOIN model_tags mt ON mt.tag_id = t.id
@@ -9641,7 +9693,7 @@ ipcMain.handle('show-context-menu', async (event, fileIdentifier) => {
               }
               
               // Get the model tags from the database
-              const modelTagRows = db.prepare(`
+              const modelTagRows = cachedPrepare(`
                 SELECT t.name 
                 FROM tags t
                 JOIN model_tags mt ON mt.tag_id = t.id
@@ -9664,7 +9716,7 @@ ipcMain.handle('show-context-menu', async (event, fileIdentifier) => {
               }
               
               // Prepare tag generation options (read aiTagPrompt from DB so we always have latest)
-              const aiTagPromptValue = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiTagPrompt')?.value ?? null;
+              const aiTagPromptValue = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiTagPrompt')?.value ?? null;
               const tagOptions = {
                 maxTags: settings.aiTagMaxTags,
                 useCategories: settings.aiTagUseCategories,
@@ -9943,7 +9995,7 @@ ipcMain.handle('show-context-menu', async (event, fileIdentifier) => {
                     : fileName;
                   const dateAdded = new Date().toISOString();
                   
-                  db.prepare(`
+                  cachedPrepare(`
                     INSERT INTO models (filePath, fileName, designer, parentModel, notes, license, dateAdded, isNew)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 1)
                   `).run(
@@ -9960,7 +10012,7 @@ ipcMain.handle('show-context-menu', async (event, fileIdentifier) => {
                   successCount++;
                 } else {
                   // Update existing model - overwrite all fields
-                  db.prepare(`
+                  cachedPrepare(`
                     UPDATE models 
                     SET designer = ?, parentModel = ?, notes = ?, license = ?
                     WHERE filePath = ?
@@ -10176,7 +10228,7 @@ ipcMain.handle('show-context-menu', async (event, fileIdentifier) => {
             const newDestination = path.join(destinationFolder, path.basename(fp));
             try {
               await fs.promises.rename(fp, newDestination);
-              db.prepare('UPDATE models SET filePath = ? WHERE filePath = ?').run(newDestination, fp);
+              cachedPrepare('UPDATE models SET filePath = ? WHERE filePath = ?').run(newDestination, fp);
             } catch (error) {
               await dialog.showMessageBox(win, {
                 type: 'error',
@@ -10503,7 +10555,7 @@ const DEDUP_SPACE_SAVED_FILES_KEY = 'dedupSpaceSavedFiles';
 
 function readSettingNonNegativeInt(key) {
   try {
-    const raw = db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value;
+    const raw = cachedPrepare('SELECT value FROM settings WHERE key = ?').get(key)?.value;
     const n = Number(raw);
     if (!Number.isFinite(n) || n <= 0) return 0;
     return Math.floor(n);
@@ -10542,7 +10594,7 @@ function lookupModelBytesByPath(filePaths) {
     const batch = filePaths.slice(i, i + batchSize);
     if (!batch.length) continue;
     const placeholders = batch.map(() => '?').join(',');
-    const rows = db.prepare(
+    const rows = cachedPrepare(
       `SELECT filePath, MAX(size) as size FROM models WHERE filePath IN (${placeholders}) GROUP BY filePath`
     ).all(...batch);
     for (const row of rows) {
@@ -10667,7 +10719,7 @@ async function deleteLibraryFiles(filePaths, options = {}) {
 // Update the handler name to match the convention
 async function getModelTagsHandler(event, modelId) {
   try {
-    return db.prepare(`
+    return cachedPrepare(`
       SELECT t.* 
       FROM tags t 
       JOIN model_tags mt ON mt.tag_id = t.id 
@@ -10688,7 +10740,7 @@ async function getGroupTagsHandler(event, modelIds) {
       .filter((id) => Number.isInteger(id) && id > 0);
     if (!ids.length) return [];
     const placeholders = ids.map(() => '?').join(',');
-    return db.prepare(`
+    return cachedPrepare(`
       SELECT DISTINCT t.name AS name
       FROM tags t
       JOIN model_tags mt ON mt.tag_id = t.id
@@ -10724,7 +10776,7 @@ function getTagNamesForFilePaths(filePaths) {
   for (let i = 0; i < paths.length; i += TAG_PATH_BIND_CHUNK) {
     const chunk = paths.slice(i, i + TAG_PATH_BIND_CHUNK);
     const placeholders = chunk.map(() => '?').join(',');
-    const rows = db.prepare(`
+    const rows = cachedPrepare(`
       SELECT DISTINCT t.name AS name
       FROM models m
       JOIN model_tags mt ON mt.model_id = m.id
@@ -10773,7 +10825,7 @@ function applyTagsToModelPaths(filePaths, change) {
     for (let i = 0; i < paths.length; i += TAG_PATH_BIND_CHUNK) {
       const chunk = paths.slice(i, i + TAG_PATH_BIND_CHUNK);
       const placeholders = chunk.map(() => '?').join(',');
-      const rows = db.prepare(`SELECT id, filePath FROM models WHERE filePath IN (${placeholders})`).all(...chunk);
+      const rows = cachedPrepare(`SELECT id, filePath FROM models WHERE filePath IN (${placeholders})`).all(...chunk);
       const found = new Set(rows.map((row) => row.filePath));
       for (const filePath of chunk) {
         if (!found.has(filePath)) missing++;
@@ -10822,7 +10874,7 @@ ipcMain.handle('quitApp', () => {
 
 ipcMain.handle('getSetting', async (event, key) => {
   try {
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    const row = cachedPrepare('SELECT value FROM settings WHERE key = ?').get(key);
     return row ? row.value : null;
   } catch (error) {
     console.error('Error getting setting:', error);
@@ -10832,7 +10884,7 @@ ipcMain.handle('getSetting', async (event, key) => {
 
 ipcMain.handle('saveSetting', async (event, key, value) => {
   try {
-    db.prepare(`
+    cachedPrepare(`
       INSERT INTO settings (key, value)
       VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -10907,10 +10959,10 @@ function applyDockerEnvSettingIfNeeded(key, envValue) {
   const force = process.env.PRINTVENTORY_ENV_OVERRIDES_SETTINGS === '1' ||
     process.env.PRINTVENTORY_ENV_OVERRIDES_SETTINGS === 'true';
   try {
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    const row = cachedPrepare('SELECT value FROM settings WHERE key = ?').get(key);
     const current = row?.value != null ? String(row.value).trim() : '';
     if (!force && current !== '') return;
-    db.prepare(`
+    cachedPrepare(`
       INSERT INTO settings (key, value)
       VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -10973,10 +11025,10 @@ function readLegacyStlHomePaths(value) {
 function readStlHomeDirectories() {
   try {
     if (!db) return [];
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('stlHomeDirectories');
+    const row = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('stlHomeDirectories');
     const fromList = dedupePathList(parseExcludePathList(row?.value));
     if (fromList.length) return fromList;
-    const legacy = db.prepare('SELECT value FROM settings WHERE key = ?').get('stlHome')?.value;
+    const legacy = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('stlHome')?.value;
     return readLegacyStlHomePaths(legacy);
   } catch (error) {
     console.error('Invalid STL Home directories setting:', error);
@@ -10985,9 +11037,9 @@ function readStlHomeDirectories() {
 }
 
 function stlHomeDirectoriesAreUnset() {
-  const listRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('stlHomeDirectories');
+  const listRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('stlHomeDirectories');
   if (!excludeDirectoriesSettingIsEmpty(listRow?.value)) return false;
-  const legacy = db.prepare('SELECT value FROM settings WHERE key = ?').get('stlHome')?.value;
+  const legacy = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('stlHome')?.value;
   return !String(legacy || '').trim();
 }
 
@@ -11006,12 +11058,12 @@ function applyStlHomeEnvIfNeeded(envValue) {
   try {
     if (!force && !stlHomeDirectoriesAreUnset()) return;
     const json = JSON.stringify(paths);
-    db.prepare(`
+    cachedPrepare(`
       INSERT INTO settings (key, value)
       VALUES ('stlHomeDirectories', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(json);
-    db.prepare(`
+    cachedPrepare(`
       INSERT INTO settings (key, value)
       VALUES ('stlHome', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -11034,10 +11086,10 @@ function applyStlHomeExcludeEnvIfNeeded(envValue) {
   const force = process.env.PRINTVENTORY_ENV_OVERRIDES_SETTINGS === '1' ||
     process.env.PRINTVENTORY_ENV_OVERRIDES_SETTINGS === 'true';
   try {
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('stlHomeExcludeDirectories');
+    const row = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('stlHomeExcludeDirectories');
     if (!force && !excludeDirectoriesSettingIsEmpty(row?.value)) return;
     const json = JSON.stringify(paths);
-    db.prepare(`
+    cachedPrepare(`
       INSERT INTO settings (key, value)
       VALUES ('stlHomeExcludeDirectories', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -11111,7 +11163,7 @@ function getLibraryRootPaths() {
   try {
     if (db) {
       for (const home of readStlHomeDirectories()) add(home);
-      add(db.prepare('SELECT value FROM settings WHERE key = ?').get('directoryPath')?.value);
+      add(cachedPrepare('SELECT value FROM settings WHERE key = ?').get('directoryPath')?.value);
     }
   } catch (_) { /* db not ready */ }
   return roots;
@@ -11544,10 +11596,10 @@ function filter3MFMetadataBySettings(metadata) {
   
   try {
     // Get settings from database (default to '1' if not set)
-    const enableDesigner = db.prepare('SELECT value FROM settings WHERE key = ?').get('enable3MFDesigner');
-    const enableParentModel = db.prepare('SELECT value FROM settings WHERE key = ?').get('enable3MFParentModel');
-    const enableLicense = db.prepare('SELECT value FROM settings WHERE key = ?').get('enable3MFLicense');
-    const enableNotes = db.prepare('SELECT value FROM settings WHERE key = ?').get('enable3MFNotes');
+    const enableDesigner = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('enable3MFDesigner');
+    const enableParentModel = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('enable3MFParentModel');
+    const enableLicense = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('enable3MFLicense');
+    const enableNotes = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('enable3MFNotes');
     
     // Include field if setting is '1' or not set (default enabled)
     if (metadata.designer && (enableDesigner?.value === '1' || !enableDesigner)) {
@@ -11756,7 +11808,7 @@ ipcMain.handle('get3MFImages', async (event, filePath, options = {}) => {
               : fileName;
             const dateAdded = new Date().toISOString();
             
-            db.prepare(`
+            cachedPrepare(`
               INSERT INTO models (filePath, fileName, designer, parentModel, notes, license, dateAdded, isNew)
               VALUES (?, ?, ?, ?, ?, ?, ?, 1)
             `).run(
@@ -12563,7 +12615,7 @@ ipcMain.handle('pull-3mf-metadata', async (event, filePaths) => {
               : fileName;
             const dateAdded = new Date().toISOString();
             
-            db.prepare(`
+            cachedPrepare(`
               INSERT INTO models (filePath, fileName, designer, parentModel, notes, license, dateAdded, isNew)
               VALUES (?, ?, ?, ?, ?, ?, ?, 1)
             `).run(
@@ -12580,7 +12632,7 @@ ipcMain.handle('pull-3mf-metadata', async (event, filePaths) => {
             successCount++;
           } else {
             // Update existing model - overwrite all fields
-            db.prepare(`
+            cachedPrepare(`
               UPDATE models 
               SET designer = ?, parentModel = ?, notes = ?, license = ?
               WHERE filePath = ?
@@ -12701,7 +12753,7 @@ const getDuplicatesHandler = async (event, includeZipOrOptions = false) => {
       const zipClause = includeZip ? '' : " AND instr(filePath, '::') = 0";
       const outerFilter = buildModelFilterConditions(filters);
       const innerFilter = buildModelFilterConditions(filters);
-      const rows = db.prepare(`
+      const rows = cachedPrepare(`
         SELECT filePath, fileName, hash, size
         FROM models
         WHERE hash IS NOT NULL
@@ -12770,7 +12822,7 @@ function countModelsNeedingHash({ includeSha256 = false, filters = null } = {}) 
     ? `(hash IS NULL OR hash = '' OR LENGTH(hash) = 64)`
     : `(hash IS NULL OR hash = '')`;
   const { conditions, params } = buildModelFilterConditions(filters);
-  const row = db.prepare(`
+  const row = cachedPrepare(`
     SELECT COUNT(*) as count FROM models
     WHERE ${hashClause}
       AND filePath NOT LIKE 'url::%'
@@ -12813,7 +12865,7 @@ async function calculateMissingHashesInternal(event, filters = null) {
     // Missing hashes, plus SHA256 (64 hex chars) that can be regenerated as MD5.
     // SHA256 still groups duplicates correctly — conversion is best-effort.
     const filterSql = buildModelFilterConditions(filters);
-    const modelsWithMissingHashes = db.prepare(`
+    const modelsWithMissingHashes = cachedPrepare(`
       SELECT filePath, fileName, size, hash
       FROM models
       WHERE (hash IS NULL OR hash = '' OR LENGTH(hash) = 64)
@@ -13088,7 +13140,7 @@ ipcMain.handle('calculate-file-hash', async (event, filePath) => {
   try {
     const hash = await calculateFileHash(filePath);
     // Update the database with the calculated hash
-    db.prepare('UPDATE models SET hash = ? WHERE filePath = ?').run(hash, filePath);
+    cachedPrepare('UPDATE models SET hash = ? WHERE filePath = ?').run(hash, filePath);
     return hash;
   } catch (error) {
     console.error(`Error calculating hash for ${filePath}:`, error);
@@ -13207,7 +13259,7 @@ ipcMain.handle('add-multiple-thumbnails', async (event, filePath, imageDataUrls)
       // Create model entry
       const dateAdded = new Date().toISOString();
       const bundle = deriveBundleFromFilePath(filePath);
-      db.prepare(`
+      cachedPrepare(`
         INSERT INTO models (filePath, fileName, thumbnail, dateAdded, isNew, bundleKey, bundleLabel, bundleKind)
         VALUES (?, ?, ?, ?, 1, ?, ?, ?)
       `).run(
@@ -13341,7 +13393,7 @@ ipcMain.handle('delete-thumbnail', async (event, filePath, index) => {
 async function checkForUpdates(isBeta = false) {
   try {
     // First check if we've already shown update dialog this session
-    const versionCheckPerformed = db.prepare('SELECT value FROM settings WHERE key = ?').get('versionCheckPerformedOnStartup');
+    const versionCheckPerformed = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('versionCheckPerformedOnStartup');
     if (versionCheckPerformed && versionCheckPerformed.value === 'true') {
       console.log('Version check already performed this session, skipping');
       return null;
@@ -13365,10 +13417,10 @@ async function checkForUpdates(isBeta = false) {
             console.log('Main Process - Valid version format received:', version);
             // Update the database with the latest version
             try {
-              db.prepare('UPDATE settings SET value = ? WHERE key = ?').run(version, 'latestVersion');
-              db.prepare('UPDATE settings SET value = ? WHERE key = ?').run(new Date().toISOString(), 'lastUpdateCheck');
+              cachedPrepare('UPDATE settings SET value = ? WHERE key = ?').run(version, 'latestVersion');
+              cachedPrepare('UPDATE settings SET value = ? WHERE key = ?').run(new Date().toISOString(), 'lastUpdateCheck');
               // Mark that we've performed the version check
-              db.prepare('UPDATE settings SET value = ? WHERE key = ?').run('true', 'versionCheckPerformedOnStartup');
+              cachedPrepare('UPDATE settings SET value = ? WHERE key = ?').run('true', 'versionCheckPerformedOnStartup');
               console.log('Database updated with latest version:', version);
             } catch (dbError) {
               console.error('Error updating version in database:', dbError);
@@ -13407,7 +13459,7 @@ ipcMain.handle('check-for-updates', async (event, isBeta) => {
   } catch (error) {
     console.error('Error checking for updates:', error);
     // Return current version to prevent update dialog on failure
-    const currentVersion = db.prepare('SELECT value FROM settings WHERE key = ?').get('currentVersion');
+    const currentVersion = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('currentVersion');
     return currentVersion?.value || null;
   }
 });
@@ -13473,7 +13525,7 @@ ipcMain.handle('move-files', async (event, filePaths, destinationFolder) => {
       const newDestination = path.join(destinationFolder, path.basename(filePath));
       console.log(`Moving file from ${filePath} to ${newDestination}`); // Log the move operation
       await fs.promises.rename(filePath, newDestination);
-      db.prepare('UPDATE models SET filePath = ? WHERE filePath = ?').run(newDestination, filePath);
+      cachedPrepare('UPDATE models SET filePath = ? WHERE filePath = ?').run(newDestination, filePath);
     }
     event.sender.send('refresh-grid');
     return true;
@@ -13517,7 +13569,7 @@ function statOrganizeFile(filePath) {
 function readScannedDirectorySetting() {
   try {
     if (!db) return [];
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('scannedDirectories');
+    const row = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('scannedDirectories');
     const parsed = JSON.parse(row && row.value ? row.value : '[]');
     if (!Array.isArray(parsed)) return [];
     return parsed.map((item) => String(item || '').trim()).filter(Boolean);
@@ -13533,7 +13585,7 @@ function rememberScannedDirectory(directoryPath) {
   if (list.some((item) => pathsAreSame(item, dir))) return;
   list.push(dir);
   try {
-    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(
+    cachedPrepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(
       'scannedDirectories',
       JSON.stringify(list)
     );
@@ -13555,13 +13607,13 @@ function listOrganizeSources() {
   const homes = readStlHomeDirectories();
   let lastScan = '';
   try {
-    lastScan = db.prepare('SELECT value FROM settings WHERE key = ?').get('directoryPath')?.value || '';
+    lastScan = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('directoryPath')?.value || '';
   } catch (_) {
     lastScan = '';
   }
   let forestRoots = [];
   try {
-    const rows = db.prepare('SELECT filePath FROM models').all();
+    const rows = cachedPrepare('SELECT filePath FROM models').all();
     const forest = buildFolderForest(rows.map((row) => row.filePath).filter(Boolean), {
       stlHome: homes[0] || '',
       roots: [...saved, ...homes, lastScan].filter(Boolean)
@@ -13594,7 +13646,7 @@ function listOrganizeSources() {
 
 function zipArchivesEnabled() {
   try {
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('enableZipArchives');
+    const row = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('enableZipArchives');
     return !!(row && row.value === '1');
   } catch (_) {
     return false;
@@ -13610,7 +13662,7 @@ function buildOrganizePlan(sourceDir, destDir, includeZips, layers) {
   if (!dest.ok) {
     return { ok: false, error: dest.error, moves: [], skipped: [], sample: [], copyCount: 0, resumeCount: 0, copyBytes: 0, noParentCount: 0, reasonCounts: {} };
   }
-  const rows = db.prepare('SELECT id, filePath, fileName, designer, parentModel, license, source, print_status, size FROM models').all();
+  const rows = cachedPrepare('SELECT id, filePath, fileName, designer, parentModel, license, source, print_status, size FROM models').all();
   const plan = planOrganize(rows, source.path, dest.path, {
     sourceStat: statOrganizeFile,
     destStat: statOrganizeFile,
@@ -13821,7 +13873,7 @@ ipcMain.handle('open-external', async (event, url) => {
 ipcMain.handle('getTotalModelCount', async () => {
   try {
     // Query total count from the models table
-    const row = db.prepare("SELECT COUNT(*) AS total FROM models").get();
+    const row = cachedPrepare("SELECT COUNT(*) AS total FROM models").get();
     return row.total;
   } catch (error) {
     console.error("Error getting total model count:", error);
@@ -14014,7 +14066,7 @@ async function generateTagsHandler(event, filePath) {
     }
     
     // Get the model tags from the database
-    const modelTagRows = db.prepare(`
+    const modelTagRows = cachedPrepare(`
       SELECT t.name 
       FROM tags t
       JOIN model_tags mt ON mt.tag_id = t.id
@@ -14030,7 +14082,7 @@ async function generateTagsHandler(event, filePath) {
     }
     
     // Prepare tag generation options (read aiTagPrompt from DB so we always have latest)
-    const aiTagPromptValue = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiTagPrompt')?.value ?? null;
+    const aiTagPromptValue = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiTagPrompt')?.value ?? null;
     const tagOptions = {
       maxTags: settings.aiTagMaxTags,
       useCategories: settings.aiTagUseCategories,
@@ -14104,8 +14156,8 @@ function applyFolderTagsToNewScanFiles(filePaths) {
   if (!db || !Array.isArray(filePaths) || filePaths.length === 0) {
     return { updated: 0, tagsAdded: 0 };
   }
-  const enabledRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('autoTagFromFolderOnScan');
-  const levelsRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiTagFolderLevels');
+  const enabledRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('autoTagFromFolderOnScan');
+  const levelsRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiTagFolderLevels');
   const levels = clampFolderLevels(levelsRow ? levelsRow.value : 2);
   if (!shouldAutoTagNewScanFiles(enabledRow ? enabledRow.value : '0', levels)) {
     return { updated: 0, tagsAdded: 0 };
@@ -14118,18 +14170,18 @@ function applyFolderTagsToNewScanFiles(filePaths) {
 }
 
 function getSettings() {
-  const apiKeyRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('apiKey');
-  const apiEndpointRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('apiEndpoint');
-  const aiModelRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiModel');
-  const aiServiceRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiService');
-  const aiTagMaxTagsRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiTagMaxTags');
-  const aiTagUseCategoriesRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiTagUseCategories');
-  const aiTagMergeStrategyRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiTagMergeStrategy');
-  const aiTagAllowRetaggingRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiTagAllowRetagging');
-  const aiTagConcurrencyRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiTagConcurrency');
-  const aiTagDetailLevelRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiTagDetailLevel');
-  const aiTagFolderLevelsRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiTagFolderLevels');
-  const aiTagPromptRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('aiTagPrompt');
+  const apiKeyRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('apiKey');
+  const apiEndpointRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('apiEndpoint');
+  const aiModelRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiModel');
+  const aiServiceRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiService');
+  const aiTagMaxTagsRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiTagMaxTags');
+  const aiTagUseCategoriesRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiTagUseCategories');
+  const aiTagMergeStrategyRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiTagMergeStrategy');
+  const aiTagAllowRetaggingRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiTagAllowRetagging');
+  const aiTagConcurrencyRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiTagConcurrency');
+  const aiTagDetailLevelRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiTagDetailLevel');
+  const aiTagFolderLevelsRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiTagFolderLevels');
+  const aiTagPromptRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('aiTagPrompt');
   
   return {
     apiKey: apiKeyRow ? apiKeyRow.value : null,
@@ -14155,7 +14207,7 @@ ipcMain.handle('get-models-needing-forced-thumbnails', async (_event, skipDataUr
       .map((url) => (typeof url === 'string' ? url : ''))
       .filter((url) => url.startsWith('data:image'));
     const extra = urls.length ? ` OR thumbnail IN (${urls.map(() => '?').join(',')})` : '';
-    return db.prepare(`
+    return cachedPrepare(`
       SELECT filePath, size FROM models
       WHERE thumbnail IS NULL OR thumbnail = '' OR thumbnail = '3d.png'${extra}
     `).all(...urls);
@@ -14167,7 +14219,7 @@ ipcMain.handle('get-models-needing-forced-thumbnails', async (_event, skipDataUr
 
 ipcMain.handle('get-models-without-thumbnails', async () => {
   try {
-    const modelsWithoutThumbnails = db.prepare(`
+    const modelsWithoutThumbnails = cachedPrepare(`
       SELECT filePath, size FROM models WHERE thumbnail IS NULL OR thumbnail = '' OR thumbnail = '3d.png'
     `).all();
     return modelsWithoutThumbnails;
@@ -14179,7 +14231,7 @@ ipcMain.handle('get-models-without-thumbnails', async () => {
 
 ipcMain.handle('get-models-with-default-thumbnails', async () => {
   try {
-    const modelsWithDefaultThumbnails = db.prepare(`
+    const modelsWithDefaultThumbnails = cachedPrepare(`
       SELECT filePath, size FROM models WHERE thumbnail IS NULL OR thumbnail = '' OR thumbnail = '3d.png'
     `).all();
     return modelsWithDefaultThumbnails;
@@ -14191,11 +14243,11 @@ ipcMain.handle('get-models-with-default-thumbnails', async () => {
 
 ipcMain.handle('get-folder-tree', async () => {
   try {
-    const rows = db.prepare('SELECT filePath FROM models').all();
+    const rows = cachedPrepare('SELECT filePath FROM models').all();
     const filePaths = rows.map((r) => r.filePath).filter(Boolean);
     const homes = readStlHomeDirectories();
     const envHomes = parseExcludePathList(process.env.STL_HOME);
-    const lastScan = db.prepare('SELECT value FROM settings WHERE key = ?').get('directoryPath')?.value || '';
+    const lastScan = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('directoryPath')?.value || '';
     const primary = homes[0] || envHomes[0] || '';
     return buildFolderForest(filePaths, {
       stlHome: primary,
@@ -14211,7 +14263,7 @@ ipcMain.handle('get-folder-tree', async () => {
 ipcMain.handle('get-models-by-directory', async (event, directoryPath) => {
   try {
 const selectCols = MODEL_LIST_COLUMNS;
-    const models = db.prepare(`
+    const models = cachedPrepare(`
       SELECT ${selectCols} FROM models
       WHERE REPLACE(LOWER(filePath), CHAR(92), '/') LIKE ?
     `).all(directoryScanPrefixSqlParam(directoryPath));
@@ -14227,7 +14279,7 @@ ipcMain.handle('get-models-page', async (event, { page, pageSize, sortOption }) 
   try {
     const offset = (page - 1) * pageSize;
 const selectCols = MODEL_LIST_COLUMNS;
-    const models = db.prepare(
+    const models = cachedPrepare(
       `SELECT ${selectCols} FROM models ORDER BY ${sortOption} LIMIT ? OFFSET ?`
     ).all(pageSize, offset);
     return models;
@@ -14324,12 +14376,12 @@ ipcMain.handle('detect-slicers', async () => {
 ipcMain.handle('get-slicers', () => {
   try {
     // Ensure the slicers table exists before querying it
-    const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
+    const tableExists = cachedPrepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
     if (!tableExists) {
       ensureSlicersTableExists();
       return [];
     }
-    return db.prepare('SELECT * FROM slicers').all();
+    return cachedPrepare('SELECT * FROM slicers').all();
   } catch (error) {
     console.error('Error getting slicers:', error);
     return [];
@@ -14339,11 +14391,11 @@ ipcMain.handle('get-slicers', () => {
 ipcMain.handle('save-slicer', (event, { name, path }) => {
   try {
     // Ensure the slicers table exists before inserting
-    const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
+    const tableExists = cachedPrepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
     if (!tableExists) {
       ensureSlicersTableExists();
     }
-    db.prepare('INSERT OR REPLACE INTO slicers (name, path) VALUES (?, ?)').run(name, path);
+    cachedPrepare('INSERT OR REPLACE INTO slicers (name, path) VALUES (?, ?)').run(name, path);
     return true;
   } catch (error) {
     console.error('Error saving slicer:', error);
@@ -14354,12 +14406,12 @@ ipcMain.handle('save-slicer', (event, { name, path }) => {
 ipcMain.handle('delete-slicer', (event, id) => {
   try {
     // Ensure the slicers table exists before deleting
-    const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
+    const tableExists = cachedPrepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
     if (!tableExists) {
       ensureSlicersTableExists();
       return true; // Nothing to delete if table didn't exist
     }
-    db.prepare('DELETE FROM slicers WHERE id = ?').run(id);
+    cachedPrepare('DELETE FROM slicers WHERE id = ?').run(id);
     return true;
   } catch (error) {
     console.error('Error deleting slicer:', error);
@@ -14391,7 +14443,7 @@ const clearAndSaveSlicersHandler = async (event, slicers) => {
     }
     
     // Ensure the slicers table exists before clearing and saving
-    const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
+    const tableExists = cachedPrepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
     if (!tableExists) {
       ensureSlicersTableExists();
     }
@@ -14417,7 +14469,7 @@ const clearAndSaveSlicersHandler = async (event, slicers) => {
     // Use a transaction to ensure atomicity
     db.transaction(() => {
       // Drop all existing entries
-      db.prepare('DELETE FROM slicers').run();
+      cachedPrepare('DELETE FROM slicers').run();
       
       // Insert new entries
       const insert = db.prepare('INSERT INTO slicers (name, path) VALUES (?, ?)');
@@ -14458,7 +14510,7 @@ const openFileInSlicerHandler = async (event, options = {}) => {
   }
 
   ensureSlicersTableExists();
-  const slicers = db.prepare('SELECT * FROM slicers').all();
+  const slicers = cachedPrepare('SELECT * FROM slicers').all();
   const slicer = getSlicerBySelection(slicers, { slicerId, slicerName });
   if (!slicer) {
     throw new Error('No slicer configured. Add a slicer in Settings.');
@@ -14639,7 +14691,7 @@ ipcHandlerRegistry.set('execute-client-command', executeClientCommandHandler);
 ipcMain.handle('get-all-model-references', async () => {
   try {
     // Use the global db variable directly instead of calling getDb()
-    const modelRefs = db.prepare('SELECT id, filePath, size FROM models').all();
+    const modelRefs = cachedPrepare('SELECT id, filePath, size FROM models').all();
     return modelRefs;
   } catch (error) {
     console.error('Error getting model references:', error);
@@ -14679,7 +14731,7 @@ async function trackAppUsage() {
 
     let modelCount = 0;
     try {
-      const row = db.prepare('SELECT COUNT(*) AS total FROM models').get();
+      const row = cachedPrepare('SELECT COUNT(*) AS total FROM models').get();
       modelCount = row ? row.total : 0;
     } catch (error) {
       console.error('Error getting model count for startup tracking:', error);
@@ -14983,9 +15035,9 @@ async function saveModel(modelData) {
 
     // Extension path mapping (Docker: client path -> container path) and optional copy to NAS
     let resolvedFilePath = filePathIn;
-    const clientPrefixRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('extensionClientPathPrefix');
-    const containerPrefixRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('extensionContainerPathPrefix');
-    const copyToNasRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('extensionCopyToNasPath');
+    const clientPrefixRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('extensionClientPathPrefix');
+    const containerPrefixRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('extensionContainerPathPrefix');
+    const copyToNasRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('extensionCopyToNasPath');
     const clientPrefix = (clientPrefixRow && clientPrefixRow.value) ? String(clientPrefixRow.value).replace(/\\/g, '/').trim().replace(/\/+$/, '') : '';
     const containerPrefix = (containerPrefixRow && containerPrefixRow.value) ? String(containerPrefixRow.value).replace(/\\/g, '/').trim().replace(/\/+$/, '') : '';
     const copyToNasPath = (copyToNasRow && copyToNasRow.value) ? String(copyToNasRow.value).replace(/\\/g, '/').trim().replace(/\/+$/, '') : '';
@@ -15018,7 +15070,7 @@ async function saveModel(modelData) {
 
     // Standalone .zip: only add if "Include zipped models" is enabled; add each STL/3MF inside (like scan)
     if (filePath && filePath.toLowerCase().endsWith('.zip') && !filePath.includes('::')) {
-      const zipSetting = db.prepare('SELECT value FROM settings WHERE key = ?').get('enableZipArchives');
+      const zipSetting = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('enableZipArchives');
       const enableZipArchives = zipSetting && zipSetting.value === '1';
       if (!enableZipArchives) {
         throw new Error('ZIP archives are disabled. Enable "Include zipped models" in Settings to add .zip files.');
@@ -15083,7 +15135,7 @@ async function saveModel(modelData) {
     let insertedNewModel = false;
     try {
       // Check if the model exists first
-      const existingModel = db.prepare('SELECT id FROM models WHERE filePath = ?').get(filePath);
+      const existingModel = cachedPrepare('SELECT id FROM models WHERE filePath = ?').get(filePath);
       
       if (existingModel) {
         // Update existing model
@@ -15120,7 +15172,7 @@ async function saveModel(modelData) {
         };
         let clearIsNew = !markAsNew && modelUserFieldsChanged(existingModelData, finals);
         if (!markAsNew && !clearIsNew && rawTags !== undefined) {
-          const existingTagRows = db.prepare(`
+          const existingTagRows = cachedPrepare(`
             SELECT t.name FROM model_tags mt
             JOIN tags t ON mt.tag_id = t.id
             WHERE mt.model_id = ?
@@ -15224,7 +15276,7 @@ async function saveModel(modelData) {
         console.log(`Processing ${tags.length} tags for model ID ${modelId}`);
         
         // Double-check that the model exists before proceeding
-        const modelExists = db.prepare('SELECT 1 FROM models WHERE id = ?').get(modelId);
+        const modelExists = cachedPrepare('SELECT 1 FROM models WHERE id = ?').get(modelId);
         if (!modelExists) {
           console.error(`Model ID ${modelId} does not exist in the database. This should not happen.`);
           return { success: true, modelId }; // Return success but skip tag processing
@@ -15233,7 +15285,7 @@ async function saveModel(modelData) {
         // Use a transaction to ensure atomicity and handle errors gracefully
         db.transaction(() => {
           // First, get existing tags before deleting (to preserve them if there's an error)
-          const existingTags = db.prepare(`
+          const existingTags = cachedPrepare(`
             SELECT t.name 
             FROM model_tags mt
             JOIN tags t ON mt.tag_id = t.id
@@ -15241,7 +15293,7 @@ async function saveModel(modelData) {
           `).all(modelId).map(row => row.name);
           
           // First, remove all existing tags for this model
-          const deleteResult = db.prepare('DELETE FROM model_tags WHERE model_id = ?').run(modelId);
+          const deleteResult = cachedPrepare('DELETE FROM model_tags WHERE model_id = ?').run(modelId);
           console.log(`Deleted ${deleteResult.changes} existing tag relationships`);
 
           // Process each tag individually (only if there are tags to add)
@@ -15253,16 +15305,16 @@ async function saveModel(modelData) {
                   console.log(`Processing tag: "${trimmedTagName}"`);
                   
                   // First ensure the tag exists in the tags table
-                  db.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(trimmedTagName);
+                  cachedPrepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(trimmedTagName);
                   
                   // Get the tag ID directly
-                  const tagRow = db.prepare('SELECT id FROM tags WHERE name = ?').get(trimmedTagName);
+                  const tagRow = cachedPrepare('SELECT id FROM tags WHERE name = ?').get(trimmedTagName);
                   
                   if (tagRow && tagRow.id) {
                     console.log(`Found tag ID ${tagRow.id} for "${trimmedTagName}"`);
                     
                     // Now create the relationship with the known IDs
-                    db.prepare('INSERT OR IGNORE INTO model_tags (model_id, tag_id) VALUES (?, ?)').run(modelId, tagRow.id);
+                    cachedPrepare('INSERT OR IGNORE INTO model_tags (model_id, tag_id) VALUES (?, ?)').run(modelId, tagRow.id);
                   } else {
                     console.warn(`Could not find tag ID for "${trimmedTagName}" after insertion`);
                   }
@@ -15288,7 +15340,7 @@ async function saveModel(modelData) {
             // Retry the tag save operation in a new transaction
             db.transaction(() => {
               // Delete existing tags first
-              db.prepare('DELETE FROM model_tags WHERE model_id = ?').run(modelId);
+              cachedPrepare('DELETE FROM model_tags WHERE model_id = ?').run(modelId);
               
               // Re-insert the tags we were trying to save (only if there are tags)
               if (tags.length > 0) {
@@ -15296,10 +15348,10 @@ async function saveModel(modelData) {
                   if (tagName && typeof tagName === 'string' && tagName.trim() !== '') {
                     const trimmedTagName = tagName.trim();
                     try {
-                      db.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(trimmedTagName);
-                      const tagRow = db.prepare('SELECT id FROM tags WHERE name = ?').get(trimmedTagName);
+                      cachedPrepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(trimmedTagName);
+                      const tagRow = cachedPrepare('SELECT id FROM tags WHERE name = ?').get(trimmedTagName);
                       if (tagRow && tagRow.id) {
-                        db.prepare('INSERT OR IGNORE INTO model_tags (model_id, tag_id) VALUES (?, ?)').run(modelId, tagRow.id);
+                        cachedPrepare('INSERT OR IGNORE INTO model_tags (model_id, tag_id) VALUES (?, ?)').run(modelId, tagRow.id);
                       }
                     } catch (retryError) {
                       console.error(`Error retrying tag "${trimmedTagName}":`, retryError);
@@ -15345,7 +15397,7 @@ async function saveModelFromUpload(payload) {
   if (!db) throw new Error('Database not ready');
   const { fileBase64, fileName: requestedFileName, designer, source, notes, parentModel, license } = payload || {};
   if (!fileBase64 || typeof fileBase64 !== 'string') throw new Error('Missing or invalid fileBase64');
-  const uploadDirRow = db.prepare('SELECT value FROM settings WHERE key = ?').get('extensionUploadDirectory');
+  const uploadDirRow = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('extensionUploadDirectory');
   let uploadDir = (uploadDirRow && uploadDirRow.value) ? String(uploadDirRow.value).trim() : '';
   if (!uploadDir && process.env.EXTENSION_UPLOAD_DIR) uploadDir = String(process.env.EXTENSION_UPLOAD_DIR).trim();
   if (!uploadDir) throw new Error('Extension upload directory not configured. Set Settings > Chrome Extension > Upload directory, or EXTENSION_UPLOAD_DIR in Docker.');
@@ -15404,13 +15456,13 @@ function ensureSlicersTableExists() {
     console.log('Checking if slicers table exists...');
     
     // Check if the slicers table exists
-    const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
+    const tableExists = cachedPrepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='slicers'`).get();
     
     if (!tableExists) {
       console.log('Slicers table does not exist. Creating it...');
       
       // Create the slicers table
-      db.prepare(`CREATE TABLE IF NOT EXISTS slicers (
+      cachedPrepare(`CREATE TABLE IF NOT EXISTS slicers (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL,
           path TEXT NOT NULL
@@ -15440,7 +15492,7 @@ function ensurePartsTablesExist() {
 
 function ensureFilamentsTablesExist() {
   try {
-    db.prepare(`CREATE TABLE IF NOT EXISTS filaments (
+    cachedPrepare(`CREATE TABLE IF NOT EXISTS filaments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         vendor TEXT,
@@ -15450,17 +15502,17 @@ function ensureFilamentsTablesExist() {
         spoolman_id INTEGER UNIQUE,
         source TEXT NOT NULL DEFAULT 'manual'
     )`).run();
-    db.prepare(`CREATE TABLE IF NOT EXISTS model_filaments (
+    cachedPrepare(`CREATE TABLE IF NOT EXISTS model_filaments (
         model_id INTEGER,
         filament_id INTEGER,
         FOREIGN KEY(model_id) REFERENCES models(id),
         FOREIGN KEY(filament_id) REFERENCES filaments(id),
         PRIMARY KEY(model_id, filament_id)
     )`).run();
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_filaments_name ON filaments(name)').run();
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_filaments_spoolman_id ON filaments(spoolman_id)').run();
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_model_filaments_filament_id ON model_filaments(filament_id)').run();
-    db.prepare('CREATE INDEX IF NOT EXISTS idx_model_filaments_model_id ON model_filaments(model_id)').run();
+    cachedPrepare('CREATE INDEX IF NOT EXISTS idx_filaments_name ON filaments(name)').run();
+    cachedPrepare('CREATE INDEX IF NOT EXISTS idx_filaments_spoolman_id ON filaments(spoolman_id)').run();
+    cachedPrepare('CREATE INDEX IF NOT EXISTS idx_model_filaments_filament_id ON model_filaments(filament_id)').run();
+    cachedPrepare('CREATE INDEX IF NOT EXISTS idx_model_filaments_model_id ON model_filaments(model_id)').run();
     return true;
   } catch (error) {
     console.error('Error ensuring filaments tables exist:', error);
@@ -15477,7 +15529,7 @@ function getClientId() {
     }
     
     // Try to get the client ID from the database
-    const clientIdSetting = db.prepare('SELECT value FROM settings WHERE key = ?').get('ClientId');
+    const clientIdSetting = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('ClientId');
     
     if (clientIdSetting && clientIdSetting.value) {
       return clientIdSetting.value;
@@ -15487,14 +15539,14 @@ function getClientId() {
     const newClientId = crypto.randomUUID();
     
     // Check if the settings table has the ClientId key
-    const existingKey = db.prepare('SELECT key FROM settings WHERE key = ?').get('ClientId');
+    const existingKey = cachedPrepare('SELECT key FROM settings WHERE key = ?').get('ClientId');
     
     if (existingKey) {
       // Update the existing key
-      db.prepare('UPDATE settings SET value = ? WHERE key = ?').run(newClientId, 'ClientId');
+      cachedPrepare('UPDATE settings SET value = ? WHERE key = ?').run(newClientId, 'ClientId');
     } else {
       // Insert a new key
-      db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('ClientId', newClientId);
+      cachedPrepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('ClientId', newClientId);
     }
     
     return newClientId;
@@ -15508,7 +15560,7 @@ function getClientId() {
 ipcMain.handle('check-collect-usage', async (event) => {
   try {
     console.log('Main Process - Checking CollectUsage setting directly from database');
-    const result = db.prepare('SELECT value FROM settings WHERE key = ?').get('CollectUsage');
+    const result = cachedPrepare('SELECT value FROM settings WHERE key = ?').get('CollectUsage');
     console.log('CollectUsage direct check result:', result);
     return result?.value || null;
   } catch (error) {

@@ -19,7 +19,8 @@ test.describe('Application Launch', () => {
 
   test('should launch the application and load the main screen', async () => {
     await acceptTerms(window);
-    const scanButton = window.locator('button:has-text("Scan Directory")');
+    // By id: the "More" overflow menu also has a "Scan Directory" item.
+    const scanButton = window.locator('#scan-directory-button');
     await expect(scanButton).toBeVisible();
 
     // Take a screenshot of the main screen

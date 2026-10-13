@@ -24771,7 +24771,9 @@ function buildGroupedDisplayRecords(records, options) {
 
   const flattened = [];
   groupedRecords.forEach(record => {
-    if (record.type !== 'group') {
+    // Groups built by an earlier pass (bundles before parent models) already carry their
+    // children and expanded state from their own expandedSet; pass them through unchanged.
+    if (record.type !== 'group' || record.groupKind !== groupKind) {
       flattened.push(record);
       return;
     }

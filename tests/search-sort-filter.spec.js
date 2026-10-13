@@ -79,7 +79,9 @@ test.describe('Search, sort and filter', () => {
     await expectViewCount(1, 10000);
     await expect(window.locator('.file-grid .file-name').first()).toContainText('cube');
 
-    await window.locator('#clear-filter-search-button').click();
+    // Searching turns the term into a filter chip and clears the box (its × is hidden);
+    // the active search is removed with Clear All Filters.
+    await window.locator('#clear-all-filters-button').click();
     await window.waitForTimeout(600);
     await expectViewCount(2, 10000);
   });
@@ -91,7 +93,9 @@ test.describe('Search, sort and filter', () => {
     await expectViewCount(0, 10000);
     await expect(window.locator('#view-count')).toContainText('0 model');
 
-    await window.locator('#clear-filter-search-button').click();
+    // Searching turns the term into a filter chip and clears the box (its × is hidden);
+    // the active search is removed with Clear All Filters.
+    await window.locator('#clear-all-filters-button').click();
     await window.waitForTimeout(600);
     await expectViewCount(2, 10000);
   });
@@ -252,12 +256,15 @@ test.describe('Search, sort and filter', () => {
   });
 
   test('Filter: Favorites shows only favorited models', async () => {
+    // Only cube is a favorite. The previous test hearts whichever card is first, which
+    // depends on the sort left behind by earlier tests, so reset every model explicitly.
     await window.evaluate(async () => {
       const models = await window.electron.getAllModels('name-asc', 0);
-      const cube = models.find((m) => (m.fileName || '').toLowerCase().includes('cube'));
-      if (cube) {
-        cube.favorite = true;
-        await window.electron.saveModel(cube);
+      for (const model of models) {
+        const shouldFavorite = (model.fileName || '').toLowerCase().includes('cube');
+        if (!!model.favorite !== shouldFavorite) {
+          await window.electron.saveModel({ ...model, favorite: shouldFavorite });
+        }
       }
     });
     await window.locator('#favorite-select').selectOption('favorited');

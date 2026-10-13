@@ -80,7 +80,8 @@ const MAC_APP_NAMES = [
 ];
 
 function fileStem(filePath) {
-  const base = path.basename(filePath).replace(/\.app$/i, '');
+  // win32.basename splits on both \ and /, so Windows paths resolve on macOS/Linux too.
+  const base = path.win32.basename(String(filePath)).replace(/\.app$/i, '');
   return base.replace(/\.(exe|appimage)$/i, '').toLowerCase();
 }
 

@@ -4,6 +4,12 @@ All notable changes contributed via pull request are documented in this file.
 
 ## [Unreleased]
 
+## [2.2.26] - 2026-10-13
+
+- Library thumbnails load in batches, and an oversized stored image is skipped without reading it, so a few huge thumbnails do not stall the grid
+- Bundle groups and parent-model groups keep their own children and expanded state when both are on screen
+- Slicer detection recognizes a Windows path when Printventory is running on macOS or Linux
+
 ## [2.2.25] - 2026-10-11
 
 - Force Missing Thumbnails tags files that fail because they have no preview, time out, or are too large. Stopping the job keeps those tags for files that already finished and leaves the file still running untagged

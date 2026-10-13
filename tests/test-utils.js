@@ -16,6 +16,10 @@ function getSmallFixtureScanPath() {
 }
 
 function getTestScanPath() {
+  // Lets a corpus live elsewhere (e.g. on macOS/Linux, where C:\TEST_FILES does not exist).
+  if (process.env.PRINTVENTORY_TEST_SCAN_PATH && fs.existsSync(process.env.PRINTVENTORY_TEST_SCAN_PATH)) {
+    return process.env.PRINTVENTORY_TEST_SCAN_PATH;
+  }
   if (process.platform === 'win32' && fs.existsSync(TEST_FILES_PATH)) {
     return TEST_FILES_PATH;
   }
@@ -161,14 +165,16 @@ async function runDirectoryScan(page, timeoutMs = 300000, minModels = 5) {
   await scanButton.waitFor({ state: 'visible', timeout: 30000 });
   await scanButton.click();
 
-  // Wait until models appear in the library (scan + indexing complete enough to test)
+  // Wait until models appear in the library (scan + indexing complete enough to test).
+  // Archive and parent-model children render as one collapsed group cell, not N file items.
   await page.waitForFunction(
     (min) => {
       const totalEl = document.getElementById('total-count');
       const gridItems = document.querySelectorAll('.file-grid .file-item');
+      const groups = document.querySelectorAll('.file-grid .parent-model-group');
       const totalMatch = totalEl?.textContent?.match(/(\d+)\s+model/);
       const total = totalMatch ? parseInt(totalMatch[1], 10) : 0;
-      return total >= min && gridItems.length >= min;
+      return total >= min && (gridItems.length >= min || groups.length > 0);
     },
     minModels,
     { timeout: timeoutMs }
@@ -240,12 +246,25 @@ async function clearAllFilters(page) {
   if (await clearSearch.isVisible().catch(() => false)) {
     await clearSearch.click();
   }
-  await page.locator('#filetype-select').selectOption('').catch(() => {});
-  await page.locator('#printed-select').selectOption('all').catch(() => {});
-  await page.locator('#designer-select').selectOption({ index: 0 }).catch(() => {});
-  await page.locator('#parent-select').selectOption({ index: 0 }).catch(() => {});
-  await page.locator('#license-select').selectOption({ index: 0 }).catch(() => {});
-  await page.locator('#tag-filter').selectOption({ index: 0 }).catch(() => {});
+  // Set values directly: these selects sit in the collapsed "More filters" section, where
+  // selectOption() waits its full 30s timeout for visibility (6 selects = a 3-minute stall).
+  await page.evaluate(() => {
+    const reset = (id, value) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (value !== undefined && Array.from(el.options).some((o) => o.value === value)) {
+        el.value = value;
+      } else {
+        el.selectedIndex = 0;
+      }
+    };
+    reset('filetype-select', '');
+    reset('printed-select', 'all');
+    reset('designer-select');
+    reset('parent-select');
+    reset('license-select');
+    reset('tag-filter');
+  });
   await applyFilters(page);
 }
 

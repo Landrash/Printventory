@@ -54,6 +54,12 @@ let window;
 let libraryTotal = 0;
 let scanPath = '';
 
+/** Filter selects live in "More filters", which collapses when model details open. */
+async function selectFilter(id, option) {
+  await expandSidebarFilters(window);
+  await window.locator(`#${id}`).selectOption(option);
+}
+
 test.describe.configure({ mode: 'serial' });
 
 test.describe('Printventory full application E2E', () => {
@@ -199,17 +205,17 @@ test.describe('Printventory full application E2E', () => {
   test('Filter: file type STL and 3MF', async () => {
     await clearAllFilters(window);
 
-    await window.locator('#filetype-select').selectOption('stl');
+    await selectFilter('filetype-select', 'stl');
     await applyFilters(window);
     const stlCount = await getViewCount(window);
     expect(stlCount).toBeGreaterThan(0);
 
-    await window.locator('#filetype-select').selectOption('3mf');
+    await selectFilter('filetype-select', '3mf');
     await applyFilters(window);
     const mfCount = await getViewCount(window);
     expect(mfCount).toBeGreaterThan(0);
 
-    await window.locator('#filetype-select').selectOption('');
+    await selectFilter('filetype-select', '');
     await applyFilters(window);
     await expectViewCount(window, libraryTotal);
   });
@@ -221,7 +227,7 @@ test.describe('Printventory full application E2E', () => {
       test.skip(true, 'Zip filter option not present');
       return;
     }
-    await window.locator('#filetype-select').selectOption('zip');
+    await selectFilter('filetype-select', 'zip');
     await applyFilters(window);
     const zipCount = await getViewCount(window);
     expect(zipCount).toBeGreaterThan(0);
@@ -235,15 +241,15 @@ test.describe('Printventory full application E2E', () => {
   test('Filter: print status All / Not Printed / Printed', async () => {
     await clearAllFilters(window);
 
-    await window.locator('#printed-select').selectOption('all');
+    await selectFilter('printed-select', 'all');
     await applyFilters(window);
     await expectViewCount(window, libraryTotal);
 
-    await window.locator('#printed-select').selectOption('not-printed');
+    await selectFilter('printed-select', 'not-printed');
     await applyFilters(window);
     await expectViewCount(window, libraryTotal);
 
-    await window.locator('#printed-select').selectOption('printed');
+    await selectFilter('printed-select', 'printed');
     await applyFilters(window);
     await expect(window.getByText('No models match your filters')).toBeVisible({ timeout: 10000 });
 
@@ -271,7 +277,7 @@ test.describe('Printventory full application E2E', () => {
   test('Filter: multi-filter search + file type + clear all', async () => {
     await clearAllFilters(window);
     await window.locator('#search-filter-input').fill('BOB');
-    await window.locator('#filetype-select').selectOption('stl');
+    await selectFilter('filetype-select', 'stl');
     await window.locator('#filter-search-button').click();
     await window.waitForTimeout(600);
     const combined = await getViewCount(window);
@@ -347,12 +353,12 @@ test.describe('Printventory full application E2E', () => {
 
   test('Single-edit: filter by saved designer and tag', async () => {
     await clearAllFilters(window);
-    await window.locator('#designer-select').selectOption({ label: 'E2E Designer' });
+    await selectFilter('designer-select', { label: 'E2E Designer' });
     await applyFilters(window);
     expect(await getViewCount(window)).toBeGreaterThan(0);
 
     await clearAllFilters(window);
-    await window.locator('#tag-filter').selectOption({ label: 'e2e-tag' });
+    await selectFilter('tag-filter', { label: 'e2e-tag' });
     await applyFilters(window);
     expect(await getViewCount(window)).toBeGreaterThan(0);
     await clearAllFilters(window);
@@ -546,7 +552,7 @@ test.describe('Printventory full application E2E', () => {
 
   test('De-Dup: current view uses library filters', async () => {
     await clearAllFilters(window);
-    await window.locator('#designer-select').selectOption({ label: 'E2E Designer' });
+    await selectFilter('designer-select', { label: 'E2E Designer' });
     await applyFilters(window);
     expect(await getViewCount(window)).toBeGreaterThan(0);
 
@@ -791,8 +797,21 @@ test.describe('Printventory full application E2E', () => {
   // ─── Sidebar De-Dup / Tag buttons ───────────────────────────────────────────
 
   test('Sidebar: De-Dup, Tag Manager, Filament, and Printer buttons open dialogs', async () => {
-    await window.locator('#dup-button').click();
-    await expect(window.locator('#dedup-dialog')).toBeVisible();
+    // With unhashed models, De-Dup first asks "Generate File Hashes?" in a native message box
+    // Playwright cannot click. Answer "No" (button index 1) so the dialog opens on existing hashes
+    // instead of hashing the whole test corpus.
+    await app.evaluate(({ dialog }) => {
+      global.__origShowMessageBox = dialog.showMessageBox;
+      dialog.showMessageBox = async () => ({ response: 1 });
+    });
+    try {
+      await window.locator('#dup-button').click();
+      await expect(window.locator('#dedup-dialog')).toBeVisible();
+    } finally {
+      await app.evaluate(({ dialog }) => {
+        dialog.showMessageBox = global.__origShowMessageBox;
+      });
+    }
     await closeDialog(window, 'dedup-dialog', '#close-dedup');
 
     await window.locator('#tag-button').click();
