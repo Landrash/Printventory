@@ -11574,7 +11574,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Update the About dialog content in index.html
   const tosContent = `
   <h4>MIT License</h4>
-  <p class="tos-copyright">Copyright (c) 2025 Printventory</p>
+  <p class="tos-copyright">Copyright (c) 2026 Printventory</p>
   <p>
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal

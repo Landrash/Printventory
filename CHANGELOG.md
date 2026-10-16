@@ -4,6 +4,10 @@ All notable changes contributed via pull request are documented in this file.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-16
+
+- Prepare for Public Release.
+
 ## [2.2.27] - 2026-10-13
 
 - Saved thumbnails stay on screen. The Too large label is no longer drawn over a thumbnail that already exists, including before the max file size setting has loaded

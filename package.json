@@ -1,6 +1,6 @@
 {
   "name": "printventory",
-  "version": "2.2.27",
+  "version": "3.0.0",
   "description": "Printventory",
   "main": "main.js",
   "scripts": {
@@ -60,6 +60,7 @@
   "build": {
     "nativeRebuilder": "legacy",
     "appId": "com.printventory.app",
+    "copyright": "Copyright © 2026 Printventory",
     "afterPack": "scripts/after-pack-linux-sandbox.js",
     "mac": {
       "category": "public.app-category.utilities",

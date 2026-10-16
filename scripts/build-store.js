@@ -2,7 +2,8 @@
  * Unsigned Microsoft Store package (.appx) and bundle (.msixbundle).
  * Partner Center signs the upload. Before submitting, set the identity from
  * Partner Center → Product identity:
- *   APPX_PUBLISHER=CN=...  APPX_IDENTITY_NAME=...  npm run build:store
+ *   APPX_PUBLISHER=CN=...  APPX_IDENTITY_NAME=...  APPX_DISPLAY_NAME=...  npm run build:store
+ *   APPX_BUNDLE_NAME=Printventory-Public-2.2.27.msixbundle  (optional output name)
  */
 const fs = require('fs');
 const os = require('os');
@@ -46,6 +47,8 @@ if (process.env.APPX_IDENTITY_NAME) overlay.appx.identityName = process.env.APPX
 if (process.env.APPX_PUBLISHER_DISPLAY_NAME) {
   overlay.appx.publisherDisplayName = process.env.APPX_PUBLISHER_DISPLAY_NAME;
 }
+if (process.env.APPX_DISPLAY_NAME) overlay.appx.displayName = process.env.APPX_DISPLAY_NAME;
+if (process.env.APPX_ARTIFACT_NAME) overlay.appx.artifactName = process.env.APPX_ARTIFACT_NAME;
 if (Object.keys(overlay.appx).length > 0) {
   const overlayPath = path.join(stagingAbs, 'appx-overlay.json');
   fs.writeFileSync(overlayPath, JSON.stringify(overlay));
@@ -78,7 +81,7 @@ const appxDest = path.join(distDir, appxName);
 fs.copyFileSync(appxSrc, appxDest);
 console.log('Copied package to dist:', appxName);
 
-const bundleName = `Printventory-${pkg.version}.msixbundle`;
+const bundleName = process.env.APPX_BUNDLE_NAME || `Printventory-${pkg.version}.msixbundle`;
 const bundleDest = path.join(distDir, bundleName);
 const makeappx = findMakeAppx();
 if (!makeappx) {
